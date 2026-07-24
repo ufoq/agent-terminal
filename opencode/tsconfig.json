@@ -22,5 +22,5 @@
     "noEmit": true,
     "moduleDetection": "force"
   },
-  "include": ["terminal.ts", "tests/**/*.ts"]
+  "include": ["tools/**/*.ts", "tests/**/*.ts"]
 }

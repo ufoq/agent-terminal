@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ToolContext } from "@opencode-ai/plugin"
 
 const originalBinary = process.env["AGENT_TERMINAL_BIN"]
 const originalCapture = process.env["AGENT_TERMINAL_CAPTURE"]
@@ -15,7 +16,7 @@ afterEach(() => {
 
 describe("OpenCode terminal tools", () => {
   test("exports exactly six narrow tools", async () => {
-    const tools = await import("../terminal")
+    const tools = await import("../tools/terminal")
     expect(Object.keys(tools).sort()).toEqual(["list", "press", "read", "send", "start", "stop"])
   })
 
@@ -30,7 +31,7 @@ describe("OpenCode terminal tools", () => {
       process.env["AGENT_TERMINAL_BIN"] = binary
       process.env["AGENT_TERMINAL_CAPTURE"] = capture
       process.env["SHELL"] = "/bin/sh"
-      const { start } = await import("../terminal")
+      const { start } = await import("../tools/terminal")
       const context: Parameters<typeof start.execute>[1] = toolContext(directory)
 
       const output = await start.execute(
@@ -67,7 +68,7 @@ describe("OpenCode terminal tools", () => {
         status: "error",
         error: { code: "job_not_found", message: "missing" },
       })
-      const { read } = await import("../terminal")
+      const { read } = await import("../tools/terminal")
       const output = await read.execute({ job: "missing" }, toolContext(directory))
       if (typeof output !== "string") throw new Error("expected textual tool output")
       expect(JSON.parse(output)).toEqual({
@@ -88,7 +89,7 @@ describe("OpenCode terminal tools", () => {
         data: { jobs: [] },
       })
       process.env["AGENT_TERMINAL_CAPTURE"] = capture
-      const { list } = await import("../terminal")
+      const { list } = await import("../tools/terminal")
 
       await list.execute({}, toolContext(directory, new AbortController().signal, "/"))
 
@@ -111,7 +112,7 @@ describe("OpenCode terminal tools", () => {
         data: { job: "debugger", issued: "keys", keys: ["Alt+!"] },
       })
       process.env["AGENT_TERMINAL_CAPTURE"] = capture
-      const { press } = await import("../terminal")
+      const { press } = await import("../tools/terminal")
       expect(press.args.keys.safeParse(["Alt+!"]).success).toBe(true)
       expect(press.args.keys.safeParse(["Ctrl+7"]).success).toBe(false)
 
@@ -130,6 +131,160 @@ describe("OpenCode terminal tools", () => {
     }
   })
 
+  test("send defaults to submit and explicit flags map to controller argv", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-terminal-adapter-"))
+    try {
+      const capture = join(directory, "argv")
+      process.env["AGENT_TERMINAL_BIN"] = await stubController(directory, 0, {
+        status: "ok",
+        data: {},
+      })
+      process.env["AGENT_TERMINAL_CAPTURE"] = capture
+      const { send, stop } = await import("../tools/terminal")
+      const context = toolContext(directory)
+
+      await Reflect.apply(send.execute, send, [{ job: "repl", text: "hello" }, context])
+      expect((await readFile(capture, "utf8")).split("\n").filter(Boolean)).toEqual([
+        "--project",
+        directory,
+        "send",
+        "repl",
+        "--",
+        "hello",
+      ])
+
+      await send.execute({ job: "repl", text: "hello", submit: false }, context)
+      expect((await readFile(capture, "utf8")).split("\n").filter(Boolean)).toContain("--no-submit")
+
+      await stop.execute({ job: "repl", force: true }, context)
+      expect((await readFile(capture, "utf8")).split("\n").filter(Boolean)).toContain("--force")
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("all tools request named permissions and start also requests bash", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-terminal-adapter-"))
+    try {
+      process.env["AGENT_TERMINAL_BIN"] = await stubController(directory, 0, {
+        status: "ok",
+        data: {},
+      })
+      const tools = await import("../tools/terminal")
+      const permissions: string[] = []
+      const context = toolContext(
+        directory,
+        new AbortController().signal,
+        directory,
+        async (input) => {
+          permissions.push(input.permission)
+        },
+      )
+
+      await tools.start.execute({ job: "server", command: "npm run dev", cwd: directory }, context)
+      await tools.read.execute({ job: "server" }, context)
+      await tools.send.execute({ job: "server", text: "status", submit: true }, context)
+      await tools.press.execute({ job: "server", keys: ["Enter"] }, context)
+      await tools.stop.execute({ job: "server", force: false }, context)
+      await tools.list.execute({}, context)
+
+      expect(permissions).toEqual([
+        "terminal_start",
+        "bash",
+        "terminal_read",
+        "terminal_send",
+        "terminal_press",
+        "terminal_stop",
+        "terminal_list",
+      ])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("permission rejection prevents spawning and external cwd asks separately", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-terminal-adapter-"))
+    const outside = await mkdtemp(join(tmpdir(), "agent-terminal-outside-"))
+    try {
+      const capture = join(directory, "argv")
+      process.env["AGENT_TERMINAL_BIN"] = await stubController(directory, 0, {
+        status: "ok",
+        data: {},
+      })
+      process.env["AGENT_TERMINAL_CAPTURE"] = capture
+      const { list, start } = await import("../tools/terminal")
+      const denied = toolContext(directory, new AbortController().signal, directory, async () => {
+        throw new Error("permission denied")
+      })
+
+      await expect(list.execute({}, denied)).rejects.toThrow("permission denied")
+      await expect(readFile(capture, "utf8")).rejects.toThrow()
+
+      const permissions: string[] = []
+      const allowed = toolContext(
+        directory,
+        new AbortController().signal,
+        directory,
+        async (input) => {
+          permissions.push(input.permission)
+        },
+      )
+      await start.execute({ job: "server", command: "pwd", cwd: outside }, allowed)
+      expect(permissions).toEqual(["terminal_start", "external_directory", "bash"])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
+  test("cwd authorization and execution use the same canonical path", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-terminal-adapter-"))
+    const outside = await mkdtemp(join(tmpdir(), "agent-terminal-outside-"))
+    try {
+      const inside = join(directory, "inside")
+      const escapePath = join(directory, "escape")
+      const capture = join(directory, "argv")
+      await mkdir(inside)
+      await symlink(outside, escapePath)
+      process.env["AGENT_TERMINAL_BIN"] = await stubController(directory, 0, {
+        status: "ok",
+        data: {},
+      })
+      process.env["AGENT_TERMINAL_CAPTURE"] = capture
+      const { start } = await import("../tools/terminal")
+      const requests: Parameters<ToolContext["ask"]>[0][] = []
+      const context = toolContext(
+        directory,
+        new AbortController().signal,
+        directory,
+        async (input) => {
+          requests.push(input)
+        },
+      )
+
+      await start.execute({ job: "inside", command: "pwd", cwd: "inside" }, context)
+      expect(requests.map((request) => request.permission)).toEqual(["terminal_start", "bash"])
+      expect((await readFile(capture, "utf8")).split("\n").filter(Boolean)).toContain(
+        await realpath(inside),
+      )
+
+      requests.length = 0
+      await start.execute({ job: "escape", command: "pwd", cwd: "escape" }, context)
+      expect(requests.map((request) => request.permission)).toEqual([
+        "terminal_start",
+        "external_directory",
+        "bash",
+      ])
+      expect(requests[1]?.patterns).toEqual([await realpath(outside)])
+      expect((await readFile(capture, "utf8")).split("\n").filter(Boolean)).toContain(
+        await realpath(outside),
+      )
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
   test("an already-aborted call rejects without leaving a child", async () => {
     const directory = await mkdtemp(join(tmpdir(), "agent-terminal-adapter-"))
     try {
@@ -137,7 +292,7 @@ describe("OpenCode terminal tools", () => {
         status: "ok",
         data: { jobs: [] },
       })
-      const { list } = await import("../terminal")
+      const { list } = await import("../tools/terminal")
       const abort = new AbortController()
       abort.abort()
       await expect(list.execute({}, toolContext(directory, abort.signal))).rejects.toThrow()
@@ -151,17 +306,17 @@ function toolContext(
   directory: string,
   abort: AbortSignal = new AbortController().signal,
   worktree: string = directory,
-) {
+  ask: ToolContext["ask"] = async () => {},
+): ToolContext {
   return {
     sessionID: "session",
     messageID: "message",
-    callID: "call",
     agent: "build",
     directory,
     worktree,
     abort,
     metadata() {},
-    async ask() {},
+    ask,
   }
 }
 

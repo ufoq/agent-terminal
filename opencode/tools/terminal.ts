@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
-import { isAbsolute, parse, resolve } from "node:path"
+import { realpath } from "node:fs/promises"
+import { isAbsolute, parse, relative, resolve } from "node:path"
 import { tool, type ToolContext, type ToolResult } from "@opencode-ai/plugin"
 
 const job = tool.schema
@@ -33,10 +34,19 @@ export const start = tool({
       .string()
       .min(1)
       .optional()
-      .describe("Working directory; defaults to current directory"),
+      .describe("Working directory; relative paths and the default use the current directory"),
   },
   async execute(args, context) {
-    const cwd = args.cwd ?? context.directory
+    await askPermission(context, "terminal_start", args.job, { job: args.job })
+    const directory = await realpath(context.directory)
+    const requestedCwd = args.cwd ?? directory
+    const cwd = await realpath(
+      isAbsolute(requestedCwd) ? requestedCwd : resolve(directory, requestedCwd),
+    )
+    if (!isWithin(directory, cwd)) {
+      await askPermission(context, "external_directory", cwd, { path: cwd })
+    }
+    await askPermission(context, "bash", args.command, { command: args.command })
     return runController(
       [
         "--project",
@@ -59,6 +69,7 @@ export const read = tool({
   description: "Read a terminal job's current lifecycle state and bounded visible screen.",
   args: { job },
   async execute(args, context) {
+    await askPermission(context, "terminal_read", args.job, { job: args.job })
     return runController(["--project", projectScope(context), "read", args.job], context)
   },
 })
@@ -68,11 +79,12 @@ export const send = tool({
   args: {
     job,
     text: tool.schema.string().min(1),
-    submit: tool.schema.boolean().default(true),
+    submit: tool.schema.boolean().optional(),
   },
   async execute(args, context) {
+    await askPermission(context, "terminal_send", args.job, { job: args.job })
     const controllerArgs = ["--project", projectScope(context), "send", args.job]
-    if (!args.submit) controllerArgs.push("--no-submit")
+    if ((args.submit ?? true) === false) controllerArgs.push("--no-submit")
     controllerArgs.push("--", args.text)
     return runController(controllerArgs, context)
   },
@@ -82,6 +94,7 @@ export const press = tool({
   description: "Press canonical named keys in a running terminal job. Use stop to terminate a job.",
   args: { job, keys: tool.schema.array(key).min(1) },
   async execute(args, context) {
+    await askPermission(context, "terminal_press", args.job, { job: args.job })
     return runController(
       ["--project", projectScope(context), "press", args.job, "--", ...args.keys],
       context,
@@ -92,10 +105,11 @@ export const press = tool({
 export const stop = tool({
   description:
     "Clean up a terminal job gracefully; set force only after graceful stop reports it is still running.",
-  args: { job, force: tool.schema.boolean().default(false) },
+  args: { job, force: tool.schema.boolean().optional() },
   async execute(args, context) {
+    await askPermission(context, "terminal_stop", args.job, { job: args.job })
     const controllerArgs = ["--project", projectScope(context), "stop", args.job]
-    if (args.force) controllerArgs.push("--force")
+    if (args.force ?? false) controllerArgs.push("--force")
     return runController(controllerArgs, context)
   },
 })
@@ -105,6 +119,7 @@ export const list = tool({
     "List project-scoped terminal jobs and their lifecycle state; use after context loss.",
   args: {},
   async execute(_args, context) {
+    await askPermission(context, "terminal_list", "*", {})
     return runController(["--project", projectScope(context), "list"], context)
   },
 })
@@ -177,6 +192,20 @@ function projectScope(context: ToolContext): string {
   const worktree = resolve(context.worktree)
   const directory = resolve(context.directory)
   return worktree === parse(worktree).root && directory !== worktree ? directory : worktree
+}
+
+async function askPermission(
+  context: ToolContext,
+  permission: string,
+  pattern: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  await context.ask({ permission, patterns: [pattern], always: [pattern], metadata })
+}
+
+function isWithin(base: string, candidate: string): boolean {
+  const path = relative(resolve(base), resolve(candidate))
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path))
 }
 
 class ControllerExecutionError extends Error {

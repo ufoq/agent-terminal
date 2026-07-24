@@ -1,6 +1,6 @@
 # agent-terminal design
 
-Status: frozen after independent agent-interface and Zellij-feasibility review. No implementation has started.
+Status: implemented and integration-tested with real OpenCode.
 
 ## 1. Product rule
 
@@ -26,7 +26,7 @@ The design also rejects a traditional process-manager surface. Separate `status`
 
 ## 3. Model-facing OpenCode tools
 
-One file, `opencode/terminal.ts`, exports six tools. OpenCode exposes them as `terminal_start`, `terminal_read`, `terminal_send`, `terminal_press`, `terminal_stop`, and `terminal_list`.
+One file, `opencode/tools/terminal.ts`, exports six tools. OpenCode exposes them as `terminal_start`, `terminal_read`, `terminal_send`, `terminal_press`, `terminal_stop`, and `terminal_list`.
 
 ### `terminal_start`
 

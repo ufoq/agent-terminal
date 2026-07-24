@@ -62,7 +62,8 @@ different project roots.
 
 ## OpenCode tools
 
-`opencode/terminal.ts` exports exactly six custom tools:
+`opencode/tools/terminal.ts` exports exactly six custom tools. The copy-ready OpenCode bundle also
+contains `opencode/skills/agent-terminal/SKILL.md`, which teaches agents when and how to use them.
 
 - `terminal_start`
 - `terminal_read`
@@ -71,13 +72,34 @@ different project roots.
 - `terminal_stop`
 - `terminal_list`
 
-Install the built binary on `PATH`, copy or symlink the adapter into an OpenCode tool directory,
-and install the pinned OpenCode plugin package beside that directory:
+Install the built binary on `PATH`, copy the tool and skill directories into OpenCode's config,
+and install the pinned OpenCode plugin package beside them:
 
 ```bash
-mkdir -p .opencode/tools
-cp opencode/terminal.ts .opencode/tools/terminal.ts
-(cd .opencode && bun add --exact @opencode-ai/plugin@1.18.4)
+mkdir -p ~/.config/opencode
+cp -R opencode/tools opencode/skills ~/.config/opencode/
+(cd ~/.config/opencode && bun add --exact @opencode-ai/plugin@1.18.4)
+```
+
+Restart OpenCode after copying config-time tool or skill files.
+
+OpenCode enforces each custom tool permission independently. `terminal_start` also checks `bash`
+permission for its command and `external_directory` when `cwd` is outside the session directory.
+A conservative starting policy is:
+
+```json
+{
+  "permission": {
+    "terminal_list": "allow",
+    "terminal_read": "allow",
+    "terminal_start": "ask",
+    "terminal_send": "ask",
+    "terminal_press": "ask",
+    "terminal_stop": "ask",
+    "bash": "ask",
+    "external_directory": "ask"
+  }
+}
 ```
 
 If the binary is not on `PATH`, set an explicit path:
