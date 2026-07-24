@@ -1,4 +1,4 @@
-# zellij-controller design
+# agent-terminal design
 
 Status: frozen after independent agent-interface and Zellij-feasibility review. No implementation has started.
 
@@ -44,7 +44,7 @@ terminal_start(job, command, cwd?)
 
 Use for dev servers, watchers, REPLs, debuggers, long builds, and commands that may need later input. Do not use for short one-shot commands; use the normal shell tool.
 
-The adapter supplies the project root from `context.worktree`; the model never supplies project identity.
+The adapter supplies the project root from `context.worktree`; if OpenCode reports the filesystem root for a non-Git directory, it uses `context.directory`. The model never supplies project identity.
 
 ### `terminal_read`
 
@@ -119,12 +119,12 @@ No persistent output log or completion notification is included. Those require a
 The Rust binary exposes the same six operations as subcommands:
 
 ```text
-zellij-controller [GLOBAL OPTIONS] start <JOB> [--cwd <PATH>] -- <PROGRAM> [ARG...]
-zellij-controller [GLOBAL OPTIONS] read <JOB>
-zellij-controller [GLOBAL OPTIONS] send <JOB> [--no-submit] -- <TEXT>
-zellij-controller [GLOBAL OPTIONS] press <JOB> -- <KEY>...
-zellij-controller [GLOBAL OPTIONS] stop <JOB> [--force]
-zellij-controller [GLOBAL OPTIONS] list
+agent-terminal [GLOBAL OPTIONS] start <JOB> [--cwd <PATH>] -- <PROGRAM> [ARG...]
+agent-terminal [GLOBAL OPTIONS] read <JOB>
+agent-terminal [GLOBAL OPTIONS] send <JOB> [--no-submit] -- <TEXT>
+agent-terminal [GLOBAL OPTIONS] press <JOB> -- <KEY>...
+agent-terminal [GLOBAL OPTIONS] stop <JOB> [--force]
+agent-terminal [GLOBAL OPTIONS] list
 ```
 
 Global options:
@@ -139,7 +139,7 @@ Global options:
 The core CLI takes an argv after `--`; it never parses a shell string. The OpenCode adapter accepts a command string for model ergonomics. It uses `SHELL` only when it names an absolute executable, otherwise falls back to `/bin/sh`, and invokes non-login `-c` mode:
 
 ```text
-zellij-controller --project <worktree> start <job> --cwd <cwd> -- <shell> -c <command>
+agent-terminal --project <scope> start <job> --cwd <cwd> -- <shell> -c <command>
 ```
 
 The command remains one argv element. The adapter does not concatenate or re-quote it. The CLI and OpenCode tool both submit Enter after `send` by default; `--no-submit` maps to `submit=false`.
@@ -303,17 +303,19 @@ Error messages are concise and actionable. Rust backtraces, command dumps, pane 
 
 ## 9. Ownership and persistence
 
-One controller-owned Zellij session exists per canonical project root. Its stable name combines a project digest with a persisted random ownership nonce. Jobs are created as held-on-exit panes and titled `zctl:<job>:<operation-nonce>`.
+One controller-owned Zellij session exists per canonical project root. Its stable name combines a project digest with a persisted random ownership nonce. Jobs are created as held-on-exit panes and titled `agent-terminal:<job>:<operation-nonce>`.
 
 State lives under the platform state directory:
 
 ```text
-<state-root>/projects/<project-digest>/
-├── state.json
-└── state.lock
+<state-root>/
+├── bootstrap.lock
+└── projects/<project-digest>/
+    ├── state.json
+    └── state.lock
 ```
 
-The permanent sibling lock is held across each complete read-modify-Zellij-write operation. Lock acquisition is non-blocking: contention returns `lock_busy` immediately. Every individual Zellij invocation has a two-second timeout. Bootstrap readiness and interrupted `pending_start` adoption each have a ten-second overall deadline; expiry returns `zellij_failed` while leaving `pending_start` durable for later reconciliation or `stop`. Graceful stop likewise has a ten-second overall deadline including its five-second exit wait, so it monopolizes the project lock only for a bounded interval.
+The permanent per-project sibling lock is held across each complete read-modify-Zellij-write operation. Its acquisition is non-blocking: contention returns `lock_busy` immediately. A state-root bootstrap lock serializes only Zellij session creation/readiness across projects, avoiding backend startup contention while keeping later job operations independent. Waiting for that lock is included in the same ten-second bootstrap deadline. The empty `bootstrap.lock` file intentionally persists after jobs exit so later processes reuse the same synchronization inode; it contains no job data. Every individual Zellij invocation has a two-second timeout. Interrupted `pending_start` adoption also has a ten-second overall deadline; expiry returns `zellij_failed` while leaving `pending_start` durable for later reconciliation or `stop`. Graceful stop likewise has a ten-second overall deadline including its five-second exit wait, so it monopolizes the project lock only for a bounded interval.
 
 `state.json` is replaced atomically through a same-directory temporary file. It stores project root, ownership nonce, session name, job name, operation nonce, full pane identity, cwd, argv, creation time, and internal mutation phase. Runtime state is derived from Zellij.
 

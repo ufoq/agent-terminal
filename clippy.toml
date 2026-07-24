@@ -1,0 +1,6 @@
+disallowed-methods = [
+  { path = "std::option::Option::unwrap", reason = "propagate or model absence explicitly" },
+  { path = "std::option::Option::expect", reason = "propagate or model absence explicitly" },
+  { path = "std::result::Result::unwrap", reason = "propagate typed errors" },
+  { path = "std::result::Result::expect", reason = "propagate typed errors" },
+]

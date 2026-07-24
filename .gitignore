@@ -1,0 +1,4 @@
+/target/
+/opencode/node_modules/
+/opencode/.tsbuildinfo
+/opencode/coverage/
