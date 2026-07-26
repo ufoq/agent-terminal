@@ -94,7 +94,9 @@ impl<Z: Zellij> Controller<Z> {
     ) -> Result<Option<crate::zellij::PaneSnapshot>, Error> {
         let deadline = operation_deadline.cap_after(STOP_GRACE);
         loop {
-            let pane = self.live_pane(registry, active, deadline)?;
+            // Sample with the overall operation deadline so a near-expired grace window does not
+            // force a 0 ms Zellij timeout; the grace deadline below still bounds the wait loop.
+            let pane = self.live_pane(registry, active, operation_deadline)?;
             if pane.as_ref().is_none_or(|snapshot| snapshot.exited) {
                 return Ok(pane);
             }
