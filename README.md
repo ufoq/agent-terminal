@@ -117,6 +117,39 @@ five seconds; if the job remains active, retry with `--force`.
 Screen reads are ANSI-stripped and bounded to the newest 200 lines and 32 KiB. They represent the
 visible terminal screen, not a canonical stdout/stderr log.
 
+## End-to-end testing
+
+`scripts/e2e-opencode.sh` runs the OpenCode skill end-to-end against a real Zellij server.
+It requires root privileges because it creates an isolated Unix user (`tester-e2e` by
+default), installs the built binary to `/usr/local/bin/agent-terminal`, copies the skill
+into the user's OpenCode config, and runs the tests inside a `script` PTY.
+
+```bash
+sudo bash scripts/e2e-opencode.sh
+```
+
+Environment variables:
+
+- `AGENT_TERMINAL_TEST_USER` — Unix user to run as (default `tester-e2e`).
+- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the full `opencode run` prompt lifecycle
+  (default `1`). Set to `0` to skip the LLM-driven phase and run only the skill
+  contract and direct CLI smoke tests.
+- `OPENCODE_MODEL` — model passed to `opencode run --model` (default
+  `litellm/ollama-cloud/deepseek-v4-flash`).
+- `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the runner builds
+  `target/release/agent-terminal`.
+
+Run from the `opencode/` directory with Bun:
+
+```bash
+cd opencode
+bun run e2e:opencode
+bun run e2e:opencode:skip-prompt
+```
+
+Artifacts are retained under `/home/$AGENT_TERMINAL_TEST_USER/test-opencode-run-<pid>/artifacts/`
+unless `AGENT_TERMINAL_CLEANUP=1` is set.
+
 ## Development
 
 Rust quality gate:
