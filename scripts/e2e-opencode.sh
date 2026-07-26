@@ -19,7 +19,7 @@ if [[ -z ${ORIG_PATH:-} ]]; then
 fi
 HOST_PATH="$ORIG_PATH"
 
-AGENT_TERMINAL_TEST_USER="${AGENT_TERMINAL_TEST_USER:-tester-e2e}"
+AGENT_TERMINAL_RUN_PREFIX="${AGENT_TERMINAL_RUN_PREFIX:-e2e}"
 AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}"
 AGENT_TERMINAL_ENABLE_PROMPT_E2E="${AGENT_TERMINAL_ENABLE_PROMPT_E2E:-1}"
 OPENCODE_MODEL="${OPENCODE_MODEL:-litellm/ollama-cloud/deepseek-v4-flash}"
@@ -32,8 +32,8 @@ AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
 
 readonly RUN_ID="$$"
 readonly SHORT_BASE="/tmp/ate2e-$$"
-readonly WORKDIR="/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-$RUN_ID/workdir"
-readonly SANDBOX="/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-$RUN_ID"
+readonly WORKDIR="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID/workdir"
+readonly SANDBOX="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID"
 readonly CONFIG_DIR="$SANDBOX/config"
 readonly DATA_DIR="$SANDBOX/data"
 readonly CACHE_DIR="$SANDBOX/cache"

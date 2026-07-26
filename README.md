@@ -141,7 +141,7 @@ What it does in one call:
 
 Environment variables:
 
-- `AGENT_TERMINAL_TEST_USER` — sandbox label only (default `tester-e2e`).
+- `AGENT_TERMINAL_RUN_PREFIX` — prefix for the temporary run directory (default `e2e`).
 - `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the LLM-driven phase (default `1`).
   Set to `0` to run only the Bun tests and direct CLI smoke.
 - `OPENCODE_MODEL` — model passed to `opencode run --model` (default
@@ -163,7 +163,7 @@ bun run e2e:opencode
 bun run e2e:opencode:skip-prompt
 ```
 
-Artifacts are retained under `/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-<pid>/`
+Artifacts are retained under `/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-<pid>/`
 unless `AGENT_TERMINAL_CLEANUP=1` is set.
 
 This is configuration isolation, not a security sandbox: the LLM still executes Bash as the
