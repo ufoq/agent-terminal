@@ -2,18 +2,22 @@
 
 set -Eeuo pipefail
 
+umask 077
+
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly SKILL_SOURCE="$REPO_ROOT/opencode/skills/agent-terminal/SKILL.md"
 
-repo_owner="$(stat -c '%U' "$REPO_ROOT")"
-HOST_PATH="$REPO_ROOT/target/release:/usr/local/bin:/usr/bin:/bin"
-if [[ -n $repo_owner && -d /home/$repo_owner/.cargo/bin ]]; then
-  HOST_PATH="/home/$repo_owner/.cargo/bin:$HOST_PATH"
+repo_owner=""
+if command -v stat >/dev/null 2>&1; then
+  repo_owner="$(stat -c '%U' "$REPO_ROOT" 2>/dev/null || true)"
 fi
-if [[ -x /opt/bun/bin/bun ]]; then
-  HOST_PATH="/opt/bun/bin:$HOST_PATH"
+
+ORIG_PATH="$PATH"
+if [[ -z ${ORIG_PATH:-} ]]; then
+  printf 'error: PATH is empty or unset\n' >&2
+  exit 1
 fi
-export PATH="$HOST_PATH"
+HOST_PATH="$ORIG_PATH"
 
 AGENT_TERMINAL_TEST_USER="${AGENT_TERMINAL_TEST_USER:-tester-e2e}"
 AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}"
@@ -24,6 +28,7 @@ AGENT_TERMINAL_CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 AGENT_TERMINAL_OPENCODE_CONFIG="${AGENT_TERMINAL_OPENCODE_CONFIG:-}"
 AGENT_TERMINAL_LITELLM_BASE_URL="${AGENT_TERMINAL_LITELLM_BASE_URL:-http://host.docker.internal:57002/v1}"
 AGENT_TERMINAL_LITELLM_API_KEY="${AGENT_TERMINAL_LITELLM_API_KEY:-local-no-secret}"
+AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
 
 readonly RUN_ID="$$"
 readonly SHORT_BASE="/tmp/ate2e-$$"
@@ -35,6 +40,12 @@ readonly CACHE_DIR="$SANDBOX/cache"
 readonly STATE_DIR="$SANDBOX/state"
 readonly ZELLIJ_SOCKET_DIR="$SHORT_BASE/z"
 readonly ARTIFACT_DIR="$SANDBOX/artifacts"
+
+if [[ -e $WORKDIR || -e $SANDBOX ]]; then
+  printf 'error: per-run path already exists for PID %s\n' "$RUN_ID" >&2
+  exit 1
+fi
+install -d -m 0700 "$SANDBOX"
 cleanup() {
   local exit_status=$?
   local sessions=""
@@ -72,6 +83,50 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+PHASE="init"
+phase() { PHASE="$1"; }
+fail_phase() {
+  printf 'error: phase "%s" failed\n' "$PHASE" >&2
+  exit 1
+}
+trap fail_phase ERR
+
+missing=()
+for tool in bun zellij script; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    missing+=("$tool")
+  fi
+done
+if [[ -n ${AGENT_TERMINAL_BIN:-} ]]; then
+  if [[ ! -x $AGENT_TERMINAL_BIN ]]; then
+    printf 'error: AGENT_TERMINAL_BIN is set to a non-executable file: %s\n' "$AGENT_TERMINAL_BIN" >&2
+    exit 1
+  fi
+else
+  if ! command -v cargo >/dev/null 2>&1; then
+    missing+=("cargo")
+  fi
+fi
+if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 && -z ${AGENT_TERMINAL_OPENCODE_CONFIG:-} ]]; then
+  if ! command -v opencode >/dev/null 2>&1; then
+    missing+=("opencode")
+  fi
+fi
+if [[ ${#missing[@]} -gt 0 ]]; then
+  printf 'error: missing required tools: %s\n' "${missing[*]}" >&2
+  exit 1
+fi
+
+if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 && $AGENT_TERMINAL_SKIP_PREFLIGHT != 1 ]]; then
+  phase "proxy preflight"
+  printf 'Preflight: model=%s endpoint=%s\n' "$OPENCODE_MODEL" "$AGENT_TERMINAL_LITELLM_BASE_URL"
+  if ! curl -fsS "$AGENT_TERMINAL_LITELLM_BASE_URL/models" -H "Authorization: Bearer $AGENT_TERMINAL_LITELLM_API_KEY" >/dev/null 2>"$SANDBOX/preflight.log"; then
+    printf 'error: cannot reach LLM endpoint %s/models (see %s/preflight.log)\n' "$AGENT_TERMINAL_LITELLM_BASE_URL" "$SANDBOX" >&2
+    exit 1
+  fi
+fi
+
+phase "binary setup"
 if [[ -n ${AGENT_TERMINAL_BIN:-} ]]; then
   resolved_binary="$AGENT_TERMINAL_BIN"
 else
@@ -103,14 +158,7 @@ if [[ ! -f $resolved_binary || ! -x $resolved_binary ]]; then
   exit 1
 fi
 
-if [[ -e $WORKDIR || -e $SANDBOX ]]; then
-  printf 'error: per-run path already exists for PID %s\n' "$RUN_ID" >&2
-  exit 1
-fi
-
-mkdir -p "$SANDBOX"
-install -d \
-  "$SANDBOX" \
+install -d -m 0700 \
   "$WORKDIR" \
   "$CONFIG_DIR" \
   "$CONFIG_DIR/skills" \
@@ -127,39 +175,45 @@ if [[ -n $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
     printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG points to a missing file: %s\n' "$AGENT_TERMINAL_OPENCODE_CONFIG" >&2
     exit 1
   fi
-  install -m 0644 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
+  install -m 0600 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
 else
-  cat >"$CONFIG_DIR/opencode.json" <<OPENCODE_CONFIG
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "autoupdate": false,
-  "share": "disabled",
-  "permission": { "*": "allow", "skill": { "*": "allow" } },
-  "disabled_providers": ["opencode"],
-  "plugin": [],
-  "provider": {
-    "litellm": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "LiteLLM (local)",
-      "options": {
-        "baseURL": "$AGENT_TERMINAL_LITELLM_BASE_URL",
-        "apiKey": "$AGENT_TERMINAL_LITELLM_API_KEY",
-        "autoload": false
-      },
-      "models": {
-        "ollama-cloud/deepseek-v4-flash": {
-          "name": "ollama-cloud/deepseek-v4-flash",
-          "tool_call": true,
-          "limit": {
-            "context": 500000,
-            "output": 65536
-          }
+  if [[ $OPENCODE_MODEL != litellm/* ]]; then
+    printf 'error: default generated opencode.json only supports litellm/* models. Set AGENT_TERMINAL_OPENCODE_CONFIG for other providers.\n' >&2
+    exit 1
+  fi
+  model_alias="${OPENCODE_MODEL#litellm/}"
+  python3 - "$AGENT_TERMINAL_LITELLM_BASE_URL" "$AGENT_TERMINAL_LITELLM_API_KEY" "$model_alias" "$OPENCODE_MODEL" <<'PY' >"$CONFIG_DIR/opencode.json"
+import json, sys
+base_url, api_key, alias, full_name = sys.argv[1:5]
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "autoupdate": False,
+    "share": "disabled",
+    "permission": {"*": "allow", "skill": {"*": "allow"}},
+    "disabled_providers": ["opencode"],
+    "plugin": [],
+    "provider": {
+        "litellm": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "LiteLLM (local)",
+            "options": {
+                "baseURL": base_url,
+                "apiKey": api_key,
+                "autoload": False,
+            },
+            "models": {
+                alias: {
+                    "name": full_name,
+                    "tool_call": True,
+                    "limit": {"context": 500000, "output": 65536},
+                }
+            },
         }
-      }
-    }
-  }
+    },
 }
-OPENCODE_CONFIG
+json.dump(config, sys.stdout, indent=2)
+PY
+  chmod 0600 "$CONFIG_DIR/opencode.json"
 fi
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
@@ -186,13 +240,22 @@ cat >"$INNER_SCRIPT" <<'INNER'
 
 set -Eeuo pipefail
 
+PHASE="init"
+phase() { PHASE="$1"; }
+fail_phase() {
+  printf 'error: phase "%s" failed\n' "$PHASE" >&2
+  exit 1
+}
+trap fail_phase ERR
+
 : >"$ARTIFACT_DIR/bun-test.log"
 : >"$ARTIFACT_DIR/cli-smoke.log"
 : >"$ARTIFACT_DIR/prompt-e2e.jsonl"
 : >"$ARTIFACT_DIR/prompt-e2e.stderr.log"
 
+phase "OpenCode skill tests"
 printf '== OpenCode skill tests ==\n'
-cd /home/agent/work/opencode
+cd "$REPO_ROOT/opencode"
 bun test 2>&1 | tee "$ARTIFACT_DIR/bun-test.log"
 
 LAST_JSON=""
@@ -220,6 +283,7 @@ run_cli() {
   LAST_JSON="$stdout_file"
 }
 
+phase "direct CLI smoke test"
 printf '\n== Direct CLI smoke test ==\n' | tee -a "$ARTIFACT_DIR/cli-smoke.log"
 cd "$WORKDIR"
 
@@ -270,7 +334,8 @@ if [[ $remaining_sessions == *agent-terminal-* ]]; then
   exit 1
 fi
 
-if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]] && command -v opencode >/dev/null 2>&1; then
+if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
+  phase "OpenCode prompt e2e"
   printf '\n== OpenCode prompt e2e ==\n'
   # OPENCODE_RUN_FLAGS is intentionally word-split so callers can supply multiple CLI flags.
   # shellcheck disable=SC2086
@@ -303,9 +368,6 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]] && command -v opencode >/dev/nul
       }
     }
   '
-else
-  printf 'OpenCode prompt e2e skipped (disabled or opencode unavailable)\n' \
-    | tee "$ARTIFACT_DIR/prompt-e2e.stderr.log"
 fi
 
 printf '\nAll executed e2e phases passed.\n'
@@ -314,9 +376,11 @@ INNER
 chmod 0755 "$INNER_SCRIPT"
 
 
+phase "e2e execution"
 printf 'Running e2e phases as %s; artifacts: %s\n' "$(id -un)" "$ARTIFACT_DIR"
 env -i \
   HOME="$(getent passwd "$(id -un)" | cut -d: -f6)" \
+  REPO_ROOT="$REPO_ROOT" \
   USER="$(id -un)" \
   LOGNAME="$(id -un)" \
   SHELL=/bin/bash \

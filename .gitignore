@@ -4,3 +4,4 @@
 /opencode/coverage/
 /.omo/
 /.*
+!.github/

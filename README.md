@@ -119,29 +119,43 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 ## End-to-end testing
 
-`scripts/e2e-opencode.sh` runs the OpenCode skill end-to-end against a real Zellij server
-as the invoking user. It does not require root or create a separate Unix account. Isolation
-is achieved by redirecting OpenCode's config/data/cache/state directories into a temporary
-sandbox and running `opencode --pure run` so no external plugins are loaded.
+`scripts/e2e-opencode.sh` is a single-command release gate. It runs as the invoking user
+(no root or separate Unix account), loads only the local skill via `opencode --pure run`,
+and exercises a real Zellij server end-to-end.
 
 ```bash
 bash scripts/e2e-opencode.sh
 ```
 
+What it does in one call:
+
+1. Checks prerequisites (`bun`, `zellij`, `script`, `cargo` or `AGENT_TERMINAL_BIN`,
+   and `opencode` when the prompt phase is enabled).
+2. Preflights the configured LLM endpoint (`/models`).
+3. Builds `agent-terminal` in release mode if a binary path is not provided.
+4. Copies the skill into an isolated OpenCode config sandbox.
+5. Runs `bun test` against the skill contract.
+6. Runs a direct CLI smoke lifecycle (`list → start → read → stop → list`).
+7. Runs an LLM-driven `opencode run` lifecycle that validates the skill end-to-end.
+8. Prints the artifact path and exits non-zero on any failure.
+
 Environment variables:
 
-- `AGENT_TERMINAL_TEST_USER` — used only as a sandbox label (default `tester-e2e`).
-- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the full `opencode run` prompt lifecycle
-  (default `1`). Set to `0` to skip the LLM-driven phase and run only the skill
-  contract and direct CLI smoke tests.
+- `AGENT_TERMINAL_TEST_USER` — sandbox label only (default `tester-e2e`).
+- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the LLM-driven phase (default `1`).
+  Set to `0` to run only the Bun tests and direct CLI smoke.
 - `OPENCODE_MODEL` — model passed to `opencode run --model` (default
-  `litellm/ollama-cloud/deepseek-v4-flash`).
+  `litellm/ollama-cloud/deepseek-v4-flash`). The default generated config supports only
+  `litellm/*` models; set `AGENT_TERMINAL_OPENCODE_CONFIG` for other providers.
 - `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the runner builds
   `target/release/agent-terminal`.
-- `AGENT_TERMINAL_OPENCODE_CONFIG` — path to a custom `opencode.json` to use instead of
-  the generated minimal config.
+- `AGENT_TERMINAL_OPENCODE_CONFIG` — path to a custom `opencode.json`.
+- `AGENT_TERMINAL_LITELLM_BASE_URL` — default `http://host.docker.internal:57002/v1`.
+- `AGENT_TERMINAL_LITELLM_API_KEY` — default `local-no-secret`.
+- `AGENT_TERMINAL_SKIP_PREFLIGHT` — set to `1` to skip the LLM endpoint preflight.
+- `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
 
-Run from the `opencode/` directory with Bun:
+Run from `opencode/` with Bun:
 
 ```bash
 cd opencode
@@ -152,8 +166,8 @@ bun run e2e:opencode:skip-prompt
 Artifacts are retained under `/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-<pid>/`
 unless `AGENT_TERMINAL_CLEANUP=1` is set.
 
-This harness is configuration isolation, not a security sandbox: the LLM still executes Bash
-as the invoking user. Run it only on throwaway machines or isolated CI runners.
+This is configuration isolation, not a security sandbox: the LLM still executes Bash as the
+invoking user. Run it only on throwaway machines or isolated CI runners.
 
 ## Development
 
