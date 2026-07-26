@@ -8,6 +8,9 @@ use agent_terminal::{
 };
 use tempfile::TempDir;
 
+#[path = "state_contract/mod.rs"]
+mod expanded;
+
 fn create_project(parent: &Path, name: &str) -> Result<std::path::PathBuf, std::io::Error> {
     let project = parent.join(name);
     fs::create_dir_all(&project)?;
