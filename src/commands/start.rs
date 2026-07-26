@@ -15,13 +15,14 @@ impl<Z: Zellij> Controller<Z> {
         job: JobName,
         cwd: Option<PathBuf>,
         command: Vec<String>,
+        invocation_dir: &std::path::Path,
     ) -> Result<StartData, Error> {
         if command.is_empty() {
             return Err(Error::InvalidInput {
                 message: "start requires a command after --".to_owned(),
             });
         }
-        let cwd = canonical_cwd(self.store.paths().project_root(), cwd)?;
+        let cwd = canonical_cwd(invocation_dir, cwd)?;
         let (mut locked, mut registry) = self.open()?;
         if registry.jobs.contains_key(&job) {
             self.reconcile_job(&mut locked, &mut registry, &job, Deadline::per_call())?;
@@ -66,11 +67,11 @@ impl<Z: Zellij> Controller<Z> {
     }
 }
 
-fn canonical_cwd(project_root: &std::path::Path, cwd: Option<PathBuf>) -> Result<PathBuf, Error> {
+fn canonical_cwd(invocation_dir: &std::path::Path, cwd: Option<PathBuf>) -> Result<PathBuf, Error> {
     let candidate = match cwd {
         Some(path) if path.is_absolute() => path,
-        Some(path) => project_root.join(path),
-        None => project_root.to_path_buf(),
+        Some(path) => invocation_dir.join(path),
+        None => invocation_dir.to_path_buf(),
     };
     let canonical = candidate.canonicalize().map_err(|source| Error::StateIo {
         action: "canonicalize job working directory",

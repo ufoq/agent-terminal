@@ -8,128 +8,11 @@ The agent understands **jobs**, not Zellij.
 
 A job is a named, project-scoped terminal process that can outlive one tool call, expose its current screen and exit state, accept later input, and be cleaned up explicitly. Sessions, tabs, panes, focus, sockets, and Zellij IDs are private implementation details.
 
+The wrapper is worthwhile because raw `zellij` commands force the agent to track pane ownership, parse unstructured output, handle concurrent calls safely, and recover from its own crashes. `agent-terminal` hides that behind logical job names, a JSON envelope, bounded screen output, atomic state, and ownership reconciliation.
+
 The interface is optimized for coding agents first and direct CLI users second.
 
-<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
-> **Obsolete after pivot:**
-
-## 2. Why the previous surface was rejected
-
-The previous `terminal_job({ action, ...optionalFields })` shape made the model solve validation rules that belong in schemas. `start`, `read`, `send`, `stop`, and `list` have different required arguments, safety properties, and permissions.
-
-OpenCode natively turns named exports into separate tools. Existing coding agents likewise separate background start, output, and stop operations. Narrow tools therefore provide:
-
-- one purpose and one short description per tool;
-- no irrelevant or conditionally required arguments;
-- independent permission policy for read-only and destructive operations;
-- simpler error recovery;
-- no top-level action enum.
-
-The design also rejects a traditional process-manager surface. Separate `status`, `output`, `wait`, and `cleanup` commands would be flexible, but they make the agent orchestrate the controller instead of doing its real task.
-
-<!-- END_OBSOLETE_AFTER_PIVOT -->
-
-<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
-> **Obsolete after pivot:**
-
-## 3. Model-facing OpenCode tools
-
-One file, `opencode/tools/terminal.ts`, exports six tools. OpenCode exposes them as `terminal_start`, `terminal_read`, `terminal_send`, `terminal_press`, `terminal_stop`, and `terminal_list`.
-
-### `terminal_start`
-
-Start a persistent or interactive terminal job.
-
-```text
-terminal_start(job, command, cwd?)
-```
-
-| Argument | Type | Meaning |
-|---|---|---|
-| `job` | string | Agent-chosen stable name such as `dev-server` or `debugger` |
-| `command` | string | Shell command to run |
-| `cwd` | string, optional | Working directory; defaults to OpenCode `context.directory` |
-
-Use for dev servers, watchers, REPLs, debuggers, long builds, and commands that may need later input. Do not use for short one-shot commands; use the normal shell tool.
-
-The adapter supplies the project root from `context.worktree`; if OpenCode reports the filesystem root for a non-Git directory, it uses `context.directory`. The model never supplies project identity.
-
-### `terminal_read`
-
-Read one job's lifecycle state and current terminal screen.
-
-```text
-terminal_read(job)
-```
-
-This deliberately combines status and output. In the common workflow the agent needs both, and one combined read avoids a second tool call. The state field, not screen activity, determines whether the job has exited.
-
-### `terminal_send`
-
-Send literal text to a running job.
-
-```text
-terminal_send(job, text, submit=true)
-```
-
-`submit=true` presses Enter after the text. Set it to false for raw paste. The text is passed as data, never interpolated into a controller shell command.
-
-### `terminal_press`
-
-Send named keys to a running job.
-
-```text
-terminal_press(job, keys)
-```
-
-`keys` is a non-empty array such as `["Down", "Enter"]`, `["Ctrl+D"]`, or `["F5"]`. Use `terminal_stop`, not `terminal_press(..., ["Ctrl+C"])`, when the intent is to terminate a job.
-
-Text and keys are separate tools because they have different semantics and because a single schema with optional `text` and `keys` permits invalid calls.
-
-### `terminal_stop`
-
-Stop or clean up one known job.
-
-```text
-terminal_stop(job, force=false)
-```
-
-Without `force`, send the terminal's Ctrl+C key sequence and allow five seconds for observed exit. If it remains running, return `job_still_running` and leave it intact. With `force`, close the owned terminal pane immediately.
-
-The operation returns the last screen observed before closure when available. It promises only that the controller-owned pane is closed and its registry entry removed, not that the application received a signal or that detached descendants were killed.
-
-### `terminal_list`
-
-List all jobs in the current project.
-
-```text
-terminal_list()
-```
-
-Use after context loss or when the agent no longer remembers the job name. It returns concise summaries and never returns screen content.
-
-<!-- END_OBSOLETE_AFTER_PIVOT -->
-
-<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
-> **Obsolete after pivot:**
-
-## 4. Why there are exactly six tools
-
-| Omitted operation | Reason |
-|---|---|
-| `status` | `terminal_read` already returns authoritative state with the screen |
-| `output` / `tail` | `terminal_read` provides the bounded screen that matters for PTY interaction |
-| `wait` | A blocking wait prevents the agent from doing useful work while the job runs |
-| `cleanup` | `terminal_stop` closes and forgets exited or lost jobs |
-| `interrupt` | Ctrl+C dispatch is the default `terminal_stop` behavior |
-| `attach` | Human visibility is a backend property, not an agent operation |
-| raw Zellij action | It would break ownership and force the agent to reason about panes |
-
-No persistent output log or completion notification is included. Those require a runner or service layer and are not needed for the minimal PTY workflow.
-
-<!-- END_OBSOLETE_AFTER_PIVOT -->
-
-## 5. Standalone CLI
+## 2. Standalone CLI
 
 The Rust binary exposes the same six operations as subcommands:
 
@@ -145,13 +28,15 @@ agent-terminal [GLOBAL OPTIONS] list
 Global options:
 
 ```text
---project <PATH>   Project identity and state scope; defaults to current directory
+--project <PATH>   Project identity and state scope; defaults to the nearest Git root,
+                   or the current directory when not inside a Git repository
+--cwd <PATH>       Working directory for start; defaults to the invocation directory
 --pretty           Pretty-print JSON; compact JSON is the default
 -v, -vv, -vvv      Stderr diagnostic level
 --state-dir <PATH> Override state root for testing or isolated use
 ```
 
-The core CLI takes an argv after `--`; it never parses a shell string.
+The core CLI takes an argv after `--`; it never parses a shell string. Defaulting `--project` to the Git root and `--cwd` to the invocation directory removes the need for the agent to derive and pass these values on every call.
 
 Exit codes:
 
@@ -161,7 +46,7 @@ Exit codes:
 | `1` | `job_*` or `lock_busy`: a valid request that the agent can recover from |
 | `2` | `invalid_input`, `state_*`, or `zellij_*`: request/controller/backend failure |
 
-## 6. JSON contract
+## 3. JSON contract
 
 Stdout contains exactly one JSON object plus a newline. Diagnostics go only to stderr. Argument parsing and validation use the same error envelope; `--help` and `--version` are the only plain-text exceptions.
 
@@ -235,7 +120,7 @@ If capture fails during cleanup, `stop` can still succeed with `screen_available
 
 Optional-field rules are fixed: `exit_code` appears only for `exited`; `screen` and `truncated` appear on successful `read` only when `screen_available=true`; `last_screen` and `truncated` appear on `stop` only when `screen_available=true`.
 
-## 7. Job semantics
+## 4. Job semantics
 
 ### Identity
 
@@ -289,7 +174,7 @@ Public key names use one controller-owned grammar, independent of Zellij spellin
 
 The post-close absence check is required because Zellij reports success for an unknown pane ID. It is not generic defensive verification. Graceful success proves observed exit; forced success proves only pane absence and registry cleanup.
 
-## 8. Error codes
+## 5. Error codes
 
 Public stable codes:
 
@@ -308,7 +193,7 @@ Public stable codes:
 
 Error messages are concise and actionable. Rust backtraces, command dumps, pane IDs, and raw Zellij JSON never enter the model response.
 
-## 9. Ownership and persistence
+## 6. Ownership and persistence
 
 One controller-owned Zellij session exists per canonical project root. Its stable name combines a project digest with a persisted random ownership nonce. Jobs are created as held-on-exit panes and titled `agent-terminal:<job>:<operation-nonce>`.
 
@@ -335,7 +220,7 @@ This ordering keeps a pane created during an interrupted controller process or c
 
 The controller supplies a minimal private Zellij config and layout so headless startup does not depend on user configuration. It bootstraps with `attach --create-background` and a keeper pane titled with the ownership nonce, then polls within the ten-second startup deadline until that pane is visible before creating a job. Plugin panes are always ignored because Zellij can retain a hidden plugin with the same numeric ID as a terminal pane. Last-job cleanup deletes the owned session inside `pending_remove` before state is cleared.
 
-## 10. Internal architecture derived from the interface
+## 7. Internal architecture derived from the interface
 
 The standalone project is one Rust crate with a small library and binary:
 
@@ -361,7 +246,7 @@ Rules:
 - compact serde JSON by default, tracing to stderr;
 - Zellij 0.44.3 is the minimum tested version.
 
-## 11. Verification contract for implementation
+## 8. Verification contract for implementation
 
 1. Start/read/stop: start a dev server, read `running` plus its ready screen, stop it, and prove the pane/session is cleaned up.
 2. Interactive text: start a prompt or REPL, send literal text with submission, and read the resulting screen.
@@ -371,14 +256,9 @@ Rules:
 6. Isolation: run same-named jobs in two project roots without state/session collision.
 7. Crash recovery: terminate the controller between durable pending state and each Zellij mutation, then prove the next operation adopts or removes exactly the nonce-matched pane.
 
-<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
-> **Obsolete after pivot:**
-8. OpenCode surface: load six named exports, cancel a running adapter call through `context.abort`, and verify no action-enum tool exists.
-<!-- END_OBSOLETE_AFTER_PIVOT -->
-
 Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij binary. Unit tests use a fake backend only for deterministic domain/error paths.
 
-## 12. Explicit non-goals
+## 9. Explicit non-goals
 
 - No runner script, persistent output log, event subscription, or notification service.
 - No `wait`, retry, restart, pause, resume, attach, cleanup, or raw Zellij command.
@@ -387,14 +267,14 @@ Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij bin
 - No Pi adapter yet.
 - No automatic secret redaction; commands and screen output are inherently visible in the terminal.
 
-## 13. Project and distribution
+## 10. Project and distribution
 
 - Standalone Rust project, independent of `myb` conventions.
 - MIT license.
 - Normal Cargo workflow: `cargo build --release` and `cargo install --path .`.
 - Release archives may be added later; they are not part of the initial implementation.
 
-## 14. Evidence used
+## 11. Evidence used
 
 - Extension-authoring reference for coding agents: <https://opencode.ai/docs/custom-tools/>
 - OpenAI function-tool schema guidance: <https://platform.openai.com/docs/guides/function-calling>

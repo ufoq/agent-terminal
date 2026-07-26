@@ -7,7 +7,7 @@ use crate::{
     domain::{JobName, Key},
     error::Error,
     output::CommandData,
-    paths::ProjectPaths,
+    paths::{ProjectPaths, find_project_root},
     state::StateStore,
     zellij::ZellijCli,
 };
@@ -79,13 +79,14 @@ pub struct StopArgs {
 }
 
 pub fn run(cli: Cli) -> Result<CommandData, Error> {
+    let invocation_dir = std::env::current_dir().map_err(|source| Error::StateIo {
+        action: "read current directory",
+        path: PathBuf::from("."),
+        source,
+    })?;
     let project = match cli.project {
         Some(project) => project,
-        None => std::env::current_dir().map_err(|source| Error::StateIo {
-            action: "read current directory",
-            path: PathBuf::from("."),
-            source,
-        })?,
+        None => find_project_root(&invocation_dir)?,
     };
     let paths = ProjectPaths::new(&project, cli.state_dir.as_deref())?;
     let store = StateStore::new(paths.clone());
@@ -99,7 +100,12 @@ pub fn run(cli: Cli) -> Result<CommandData, Error> {
     match cli.command {
         CliCommand::List => controller.list().map(CommandData::List),
         CliCommand::Start(args) => controller
-            .start(JobName::from_str(&args.job)?, args.cwd, args.command)
+            .start(
+                JobName::from_str(&args.job)?,
+                args.cwd,
+                args.command,
+                &invocation_dir,
+            )
             .map(CommandData::Start),
         CliCommand::Read(args) => controller
             .read(JobName::from_str(&args.job)?)

@@ -53,9 +53,10 @@ agent-terminal stop dev-server
 agent-terminal list
 ```
 
-Use `--project <path>` to select the project scope. It defaults to the current directory. Set
-`AGENT_TERMINAL_STATE` or pass `--state-dir <path>` to override the operating-system state
-directory.
+Use `--project <path>` to select the project scope. It defaults to the nearest Git root, or to the
+current directory when not inside a Git repository. `start` defaults `--cwd` to the invocation
+directory. Set `AGENT_TERMINAL_STATE` or pass `--state-dir <path>` to override the operating-system
+state directory.
 
 Job names must match `[a-z0-9][a-z0-9._-]{0,63}`. The same job name may be used independently in
 different project roots.
@@ -96,10 +97,9 @@ In OpenCode, model actions can be cancelled mid-execution. Follow these rules:
 
 ### Project and working directory
 
-The CLI defaults `--project` to the invocation directory and `start` defaults `--cwd` to the
-project root. This skill passes an explicit stable `--project` on every call and passes `--cwd`
-when the intended working directory differs from the project root, so CLI behavior does not depend
-on the model's transient current directory inside the Bash tool.
+The CLI defaults `--project` to the nearest Git root and `start` defaults `--cwd` to the invocation
+directory. Most calls need no explicit `--project` or `--cwd`; use them only to override the default
+scope or working directory.
 
 ## Lifecycle
 

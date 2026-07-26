@@ -38,10 +38,9 @@ impl Harness {
     fn run(&self, arguments: &[&str]) -> Result<Output, std::io::Error> {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("agent-terminal"));
         command
+            .current_dir(&self.project)
             .arg("--state-dir")
             .arg(&self.state_root)
-            .arg("--project")
-            .arg(&self.project)
             .args(arguments)
             .output()
     }

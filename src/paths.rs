@@ -4,6 +4,25 @@ use directories::ProjectDirs;
 
 use crate::error::Error;
 
+/// Find the nearest Git root at or above `start`.
+///
+/// Returns the directory containing `.git`, or `start` itself when no Git root is found.
+/// The returned path is not canonicalized; canonicalize it before using as a project root.
+pub fn find_project_root(start: &Path) -> Result<PathBuf, Error> {
+    let mut current = start;
+    loop {
+        let git = current.join(".git");
+        if git.exists() {
+            return Ok(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    Ok(start.to_path_buf())
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectPaths {
     project_root: PathBuf,
