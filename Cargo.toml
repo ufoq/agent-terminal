@@ -32,8 +32,6 @@ wait-timeout = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"
-assert_fs = "1"
-predicates = "3"
 tempfile = "3"
 
 [lints.rust]

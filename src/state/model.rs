@@ -14,7 +14,7 @@ use crate::{
     paths::project_digest,
 };
 
-pub const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registry {
@@ -81,7 +81,7 @@ pub struct PendingStart {
 
 impl PendingStart {
     #[must_use]
-    pub fn new(cwd: PathBuf, command: Vec<String>) -> Self {
+    fn new(cwd: PathBuf, command: Vec<String>) -> Self {
         let operation_nonce = Uuid::new_v4().simple().to_string();
         let title = format!("agent-terminal:pending:{}", &operation_nonce[..12]);
         Self {

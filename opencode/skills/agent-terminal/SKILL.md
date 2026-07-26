@@ -40,7 +40,7 @@ Press named keys.
 
 ```bash
 agent-terminal press debugger -- Down Enter
-agent-terminal press pager -- Space
+agent-terminal press pager -- PageDown
 ```
 
 Stop a job. Use `--force` only if a graceful stop reports `job_still_running`.

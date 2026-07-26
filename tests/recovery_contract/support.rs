@@ -195,7 +195,6 @@ impl Zellij for FakeZellij {
                 if pane.id == target.pane_id.get() && pane.title == target.title {
                     pane.exited = true;
                     pane.exit_status = Some(130);
-                    pane.is_held = true;
                 }
             }
         }
@@ -250,6 +249,5 @@ pub fn pane(id: u32, title: &str, exited: bool) -> PaneSnapshot {
         title: title.to_owned(),
         exited,
         exit_status: exited.then_some(0),
-        is_held: exited,
     }
 }

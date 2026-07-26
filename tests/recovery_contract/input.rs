@@ -39,7 +39,6 @@ fn read_exited_pane_returns_screen_and_exit_status() -> Result<(), Box<dyn std::
     let (fixture, job) = running_fixture("read")?;
     fixture.fake.state()?.panes[0].exited = true;
     fixture.fake.state()?.panes[0].exit_status = Some(23);
-    fixture.fake.state()?.panes[0].is_held = true;
     fixture.fake.state()?.screen = b"done\n".to_vec();
 
     let read = fixture.controller().read(job)?;
@@ -207,7 +206,6 @@ fn exited_job_rejects_send_and_press_without_backend_input()
 -> Result<(), Box<dyn std::error::Error>> {
     let (fixture, job) = running_fixture("input")?;
     fixture.fake.state()?.panes[0].exited = true;
-    fixture.fake.state()?.panes[0].is_held = true;
 
     let send_result = fixture.controller().send(job.clone(), "literal", true);
     let press_result = fixture.controller().press(job, &[Key::from_str("Enter")?]);

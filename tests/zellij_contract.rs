@@ -25,8 +25,8 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn pane_identity_ignores_plugin_with_same_numeric_id() -> Result<(), Box<dyn std::error::Error>> {
     let panes = parse_panes(
         r#"[
-          {"id":0,"is_plugin":true,"title":"zellij:link","exited":false,"exit_status":null,"is_held":false},
-          {"id":0,"is_plugin":false,"title":"agent-terminal:api:abc","exited":true,"exit_status":7,"is_held":true}
+          {"id":0,"is_plugin":true,"title":"zellij:link","exited":false,"exit_status":null},
+          {"id":0,"is_plugin":false,"title":"agent-terminal:api:abc","exited":true,"exit_status":7}
         ]"#,
     )?;
     let target = PaneTarget {
@@ -96,7 +96,7 @@ fn unexpected_list_sessions_failure_is_typed() -> TestResult {
     let temp = TempDir::new()?;
     let (cli, _executable) = fake_cli(
         temp.path(),
-        "printf '%s\\n' 'adapter unavailable' >&2; exit 23",
+        "printf '%s\\n' 'backend unavailable' >&2; exit 23",
     )?;
     let session = SessionName::new("agent-terminal-project-owner".to_owned())?;
 
@@ -104,7 +104,7 @@ fn unexpected_list_sessions_failure_is_typed() -> TestResult {
 
     assert!(matches!(
         result,
-        Err(Error::ZellijFailed { message }) if message == "adapter unavailable"
+        Err(Error::ZellijFailed { message }) if message == "backend unavailable"
     ));
     Ok(())
 }
@@ -154,7 +154,7 @@ fn list_panes_parses_every_snapshot_field() -> TestResult {
     let temp = TempDir::new()?;
     let (cli, _executable) = fake_cli(
         temp.path(),
-        r#"printf '%s\n' '[{"id":17,"is_plugin":true,"title":"status pane","exited":true,"exit_status":137,"is_held":true}]'"#,
+        r#"printf '%s\n' '[{"id":17,"is_plugin":true,"title":"status pane","exited":true,"exit_status":137}]'"#,
     )?;
     let session = SessionName::new("agent-terminal-project-owner".to_owned())?;
 
@@ -168,7 +168,6 @@ fn list_panes_parses_every_snapshot_field() -> TestResult {
             title: "status pane".to_owned(),
             exited: true,
             exit_status: Some(137),
-            is_held: true,
         }]
     );
     Ok(())

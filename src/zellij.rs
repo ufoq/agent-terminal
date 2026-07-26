@@ -34,7 +34,6 @@ pub struct PaneSnapshot {
     pub title: String,
     pub exited: bool,
     pub exit_status: Option<i32>,
-    pub is_held: bool,
 }
 
 pub trait Zellij {

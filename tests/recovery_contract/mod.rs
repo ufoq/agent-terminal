@@ -1,8 +1,6 @@
-#![allow(clippy::disallowed_methods)]
-
 mod fixture;
 mod input;
-mod legacy;
 mod recovery;
+mod regressions;
 mod stop;
 mod support;

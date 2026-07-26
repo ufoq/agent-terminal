@@ -65,8 +65,7 @@ different project roots.
 ## OpenCode skill
 
 `opencode/skills/agent-terminal/SKILL.md` teaches the model to invoke the Rust CLI directly through
-Bash. There are no adapter wrappers, no plugin package, and no dedicated `terminal_*`
-permissions.
+Bash.
 
 Install the built binary on `PATH`, then copy the skill directory into OpenCode's config:
 
@@ -79,12 +78,12 @@ Restart OpenCode after copying skill files.
 
 ### Permissions
 
-This integration adds no dedicated `terminal_*` permissions. OpenCode's Bash authorization governs
-every invocation of `agent-terminal` because the skill runs the CLI as a standard Bash command.
-Structured external `workdir` and recognized filesystem commands may receive additional checks, but
-the embedded `--project` and `--cwd` arguments are not independently canonicalized or authorized by
-OpenCode. Bash remains unsandboxed: the model can invoke the CLI through Bash just as it would any
-other command on the host.
+The skill invokes the CLI through Bash, so Bash authorization governs every `agent-terminal`
+invocation. The skill does not add its own permission category. Structured external `workdir`
+and recognized filesystem commands may receive additional checks, but the embedded `--project`
+and `--cwd` arguments are not independently canonicalized or authorized by OpenCode. Bash remains
+unsandboxed: the model can invoke the CLI through Bash just as it would any other command on the
+host.
 
 ### Cancellation
 

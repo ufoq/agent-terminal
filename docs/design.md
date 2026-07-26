@@ -1,6 +1,6 @@
 # agent-terminal design
 
-Status: Rust CLI implemented; OpenCode TypeScript adapter removed; OpenCode/Pi skill is CLI-oriented.
+Status: Rust CLI implemented; OpenCode skill is CLI-oriented (invokes the binary through Bash).
 
 ## 1. Product rule
 
@@ -231,9 +231,16 @@ src/
 ├── cli.rs         six subcommands and global options
 ├── error.rs       typed domain errors and stable codes
 ├── output.rs      JSON envelopes; sole stdout writer
-├── paths.rs       project/config/state path resolution
-├── state.rs       typed registry, lock, atomic persistence
-├── zellij.rs      subprocess adapter behind a testable trait
+├── paths.rs       project/config/state path resolution; Git-root default
+├── domain.rs      job/session/pane newtypes, key grammar, bounded screen
+├── config.rs      private Zellij config/layout file materialization
+├── controller.rs  job lifecycle orchestration behind a testable trait
+├── reconcile.rs   pending-start and pending-remove reconciliation
+├── telemetry.rs   tracing initialization
+├── state.rs       re-exports from the state module tree
+├── state/         typed registry, lock, atomic persistence
+├── zellij.rs      re-exports from the zellij module tree
+├── zellij/        subprocess backend behind a testable trait
 └── commands/      start, read, send, press, stop, list
 ```
 
@@ -241,7 +248,7 @@ Rules:
 
 - synchronous `std::process::Command`; no async runtime or daemon;
 - argv slices only; no formatted shell commands in Rust;
-- `thiserror` in the library and `anyhow` only in `main` for dynamic context;
+- `thiserror` for typed errors throughout the library and binary; no `anyhow`;
 - no `unwrap`, `expect`, `panic`, `Box<dyn Error>`, or stdout writes in library code;
 - newtypes for job, project, session, and terminal-pane identity;
 - compact serde JSON by default, tracing to stderr;
@@ -265,7 +272,6 @@ Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij bin
 - No `wait`, retry, restart, pause, resume, attach, cleanup, or raw Zellij command.
 - No daemon, HTTP, socket, MCP server, Zellij WASM plugin, or database.
 - No arbitrary user-pane control or shared-session ownership.
-- No Pi adapter yet.
 - No automatic secret redaction; commands and screen output are inherently visible in the terminal.
 
 ## 10. Project and distribution
@@ -277,11 +283,8 @@ Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij bin
 
 ## 11. Evidence used
 
-- Extension-authoring reference for coding agents: <https://opencode.ai/docs/custom-tools/>
-- OpenAI function-tool schema guidance: <https://platform.openai.com/docs/guides/function-calling>
 - Anthropic agent-tool design principles: <https://www.anthropic.com/engineering/writing-tools-for-agents>
 - Zellij programmatic control: <https://zellij.dev/documentation/programmatic-control.html>
 - Zellij CLI actions: <https://zellij.dev/documentation/cli-actions.html>
-- Prior local synthesis: `../../../zellij-work/05-zellij-for-agents-analysis.md`
 
 The main borrowed pattern is Claude Code's split between background start, output/state read, and stop. The design adds only the input and recovery operations required for persistent interactive PTY work.

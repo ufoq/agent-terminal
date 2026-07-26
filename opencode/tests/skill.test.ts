@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readFile, access } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const projectRoot = resolve(import.meta.dir, "../..")
@@ -136,7 +136,7 @@ describe("agent-terminal CLI skill contract", () => {
     expect(skill).toContain("safe to retry")
   })
 
-  test("contains no adapter or migration framing", async () => {
+  test("skill framing stays CLI-first with no legacy wording", async () => {
     const skill = await readFile(skillPath, "utf8")
     const lower = skill.toLowerCase()
     expect(lower).not.toContain("migration")
@@ -158,29 +158,15 @@ describe("agent-terminal CLI skill contract", () => {
   })
 })
 
-describe("adapter artifacts are absent", () => {
-  const d1 = `${["opencode", "tools", "terminal.ts"].join("/")} no longer exists`
-  test(d1, async () => {
-    const p = resolve(projectRoot, "opencode", "tools", "terminal.ts")
-    await expect(access(p)).rejects.toThrow()
-  })
-
-  const d2 = `${["opencode", "tests", "terminal.test.ts"].join("/")} no longer exists`
-  test(d2, async () => {
-    const p = resolve(projectRoot, "opencode", "tests", "terminal.test.ts")
-    await expect(access(p)).rejects.toThrow()
-  })
-
-  const d3 = `package.json contains no ${["@opencode-ai", "plugin"].join("/")}`
-  test(d3, async () => {
+describe("dependency and skill hygiene", () => {
+  test("package.json contains no @opencode-ai/plugin dependency", async () => {
     const p = resolve(projectRoot, "opencode/package.json")
     const pkg = await readFile(p, "utf8")
     const forbidden = ["@opencode-ai", "plugin"].join("/")
     expect(pkg).not.toContain(forbidden)
   })
 
-  const d4 = `tsconfig.json does not include ${["tools", "**", "*.ts"].join("/")}`
-  test(d4, async () => {
+  test("tsconfig.json does not include tools/**/*.ts", async () => {
     const p = resolve(projectRoot, "opencode/tsconfig.json")
     const tsconfig = await readFile(p, "utf8")
     const forbidden = ["tools", "**", "*.ts"].join("/")
@@ -188,16 +174,14 @@ describe("adapter artifacts are absent", () => {
   })
 
   const prefix = "terminal" + "_"
-  const d5 = `SKILL.md contains no ${prefix}* tool-call syntax`
-  test(d5, async () => {
+  test(`SKILL.md contains no ${prefix}* tool-call syntax`, async () => {
     const skill = await readFile(skillPath, "utf8")
     for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
       expect(skill).not.toContain(prefix + verb)
     }
   })
 
-  const d6 = `bun.lock contains no ${["@opencode-ai", "plugin"].join("/")}`
-  test(d6, async () => {
+  test("bun.lock contains no @opencode-ai/plugin", async () => {
     const p = resolve(projectRoot, "opencode/bun.lock")
     const lock = await readFile(p, "utf8")
     const forbidden = ["@opencode-ai", "plugin"].join("/")
