@@ -1,15 +1,17 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use serde_json::Value;
 use tempfile::TempDir;
 
-pub static E2E_LOCK: Mutex<()> = Mutex::new(());
+static SOCKET_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub struct Harness {
     _temp: TempDir,
@@ -141,8 +143,23 @@ impl Drop for Harness {
     }
 }
 
-pub fn serial_guard() -> MutexGuard<'static, ()> {
-    match crate::E2E_LOCK.lock() {
+pub fn socket_guard(socket_dir: &Path) -> MutexGuard<'static, ()> {
+    let canonical_socket_dir = socket_dir
+        .canonicalize()
+        .unwrap_or_else(|_| socket_dir.to_path_buf());
+    let socket_lock = {
+        let mut socket_locks = match SOCKET_LOCKS.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        Arc::clone(
+            socket_locks
+                .entry(canonical_socket_dir)
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    };
+    let static_socket_lock = Box::leak(Box::new(socket_lock));
+    match static_socket_lock.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }

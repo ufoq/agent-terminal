@@ -1,15 +1,15 @@
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::harness::{Harness, serial_guard};
+use super::harness::{Harness, socket_guard};
 
 #[test]
 fn same_name_when_projects_differ() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = serial_guard();
     let shared = TempDir::new()?;
     let state_root = shared.path().join("state");
     let socket_dir = shared.path().join("socket");
     let first = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
+    let _guard = socket_guard(&socket_dir);
     let second = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
     assert!(first.start("server", "sleep 30")?.status.success());
     assert!(second.start("server", "sleep 30")?.status.success());
@@ -26,7 +26,6 @@ fn same_name_when_projects_differ() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn multiple_jobs_share_session() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     assert!(
         harness

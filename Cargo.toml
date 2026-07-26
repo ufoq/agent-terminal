@@ -8,6 +8,10 @@ readme = "README.md"
 description = "Agent-native terminal job control backed by Zellij"
 exclude = ["/opencode/node_modules/**", "/opencode/coverage/**", "/target/**"]
 
+[[test]]
+name = "zellij_e2e"
+path = "tests/zellij_e2e/mod.rs"
+
 [dependencies]
 anyhow = "1"
 blake3 = "1"

@@ -6,15 +6,15 @@ use std::{
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::harness::{Harness, serial_guard};
+use super::harness::{Harness, socket_guard};
 
 #[test]
 fn concurrent_starts_share_the_bootstrap_lock() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = serial_guard();
     let shared = TempDir::new()?;
     let state_root = shared.path().join("state");
     let socket_dir = shared.path().join("socket");
     let first = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
+    let _guard = socket_guard(&socket_dir);
     let second = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
     let barrier = Barrier::new(3);
 
@@ -45,7 +45,6 @@ fn concurrent_starts_share_the_bootstrap_lock() -> Result<(), Box<dyn std::error
 
 #[test]
 fn concurrent_starts_to_same_job_serialize() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     let project = harness.project.to_string_lossy();
     let barrier = Barrier::new(3);
@@ -119,7 +118,6 @@ fn concurrent_starts_to_same_job_serialize() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn concurrent_stop_and_read_do_not_corrupt() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     let start_body = harness.start_ok("race", "while :; do sleep 1; done")?;
     assert_eq!(start_body["data"]["state"], "running");
@@ -203,7 +201,6 @@ fn concurrent_stop_and_read_do_not_corrupt() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn concurrent_sends_to_same_job_serialize() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",

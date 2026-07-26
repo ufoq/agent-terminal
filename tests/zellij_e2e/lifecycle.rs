@@ -2,11 +2,10 @@ use std::fs;
 
 use serde_json::Value;
 
-use super::harness::{Harness, serial_guard, session_is_live};
+use super::harness::{Harness, session_is_live};
 
 #[test]
 fn start_read_stop_when_job_is_running() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = serial_guard();
     let harness = Harness::new()?;
     let start_body = harness.start_ok(
         "server",
@@ -39,7 +38,6 @@ fn start_read_stop_when_job_is_running() -> Result<(), Box<dyn std::error::Error
 
 #[test]
 fn send_and_press_when_job_is_interactive() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = serial_guard();
     let harness = Harness::new()?;
     harness.start_ok(
         "prompt",
@@ -61,7 +59,6 @@ fn send_and_press_when_job_is_interactive() -> Result<(), Box<dyn std::error::Er
 
 #[test]
 fn fast_failure_when_command_exits_immediately() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = serial_guard();
     let harness = Harness::new()?;
     let start_body = harness.start_ok("tests", "printf 'boom\\n'; exit 7")?;
     assert_eq!(start_body["data"]["state"], "exited");
@@ -80,7 +77,6 @@ fn fast_failure_when_command_exits_immediately() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn cwd_and_argv_preserve_spaces_and_metacharacters() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     let subdir = harness.project.join("sub dir");
     fs::create_dir(&subdir)?;
@@ -113,7 +109,6 @@ fn cwd_and_argv_preserve_spaces_and_metacharacters() -> Result<(), Box<dyn std::
 
 #[test]
 fn send_no_submit_then_press_submits() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",
@@ -152,7 +147,6 @@ fn send_no_submit_then_press_submits() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn input_to_exited_job_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",
@@ -181,7 +175,6 @@ fn input_to_exited_job_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn graceful_stop_refuses_then_force_succeeds() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",
@@ -213,7 +206,6 @@ fn graceful_stop_refuses_then_force_succeeds() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn stop_already_exited_job_is_not_forced() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",
@@ -238,7 +230,6 @@ fn stop_already_exited_job_is_not_forced() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn external_session_loss_reports_lost() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.start_ok("lost-job", "while :; do sleep 1; done")?;
     let running_body = harness.run_ok(&["read", "lost-job"])?;
@@ -263,7 +254,6 @@ fn external_session_loss_reports_lost() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn screen_is_ansi_stripped_utf8_safe_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = serial_guard();
     let harness = Harness::new()?;
     harness.run_ok(&[
         "start",
