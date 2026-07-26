@@ -7,14 +7,14 @@ logical job names.
 The project contains:
 
 - a standalone Rust CLI;
-- a thin OpenCode custom-tool adapter;
+- an OpenCode skill that teaches Bash invocation of the CLI;
 - no daemon, HTTP service, persistent output log, or raw Zellij command passthrough.
 
 ## Requirements
 
 - Rust 1.85 or newer;
 - Zellij 0.44.3 or newer;
-- Bun for developing the optional OpenCode adapter.
+- Bun is required for running the OpenCode skill contract tests and quality gate.
 
 ## Install
 
@@ -60,58 +60,51 @@ directory.
 Job names must match `[a-z0-9][a-z0-9._-]{0,63}`. The same job name may be used independently in
 different project roots.
 
-## OpenCode tools
+## OpenCode skill
 
-`opencode/tools/terminal.ts` exports exactly six custom tools. The copy-ready OpenCode bundle also
-contains `opencode/skills/agent-terminal/SKILL.md`, which teaches agents when and how to use them.
+`opencode/skills/agent-terminal/SKILL.md` teaches the model to invoke the Rust CLI directly through
+Bash. There are no adapter wrappers, no plugin package, and no dedicated `terminal_*`
+permissions.
 
-- `terminal_start`
-- `terminal_read`
-- `terminal_send`
-- `terminal_press`
-- `terminal_stop`
-- `terminal_list`
-
-Install the built binary on `PATH`, copy the tool and skill directories into OpenCode's config,
-and install the pinned OpenCode plugin package beside them:
+Install the built binary on `PATH`, then copy only the skill directory into OpenCode's config:
 
 ```bash
-mkdir -p ~/.config/opencode
-cp -R opencode/tools opencode/skills ~/.config/opencode/
-(cd ~/.config/opencode && bun add --exact @opencode-ai/plugin@1.18.4)
+cp -R opencode/skills ~/.config/opencode/
 ```
 
-Restart OpenCode after copying config-time tool or skill files.
-
-OpenCode enforces each custom tool permission independently. `terminal_start` also checks `bash`
-permission for its command and `external_directory` when `cwd` is outside the session directory.
-A conservative starting policy is:
-
-```json
-{
-  "permission": {
-    "terminal_list": "allow",
-    "terminal_read": "allow",
-    "terminal_start": "ask",
-    "terminal_send": "ask",
-    "terminal_press": "ask",
-    "terminal_stop": "ask",
-    "bash": "ask",
-    "external_directory": "ask"
-  }
-}
-```
-
-If the binary is not on `PATH`, set an explicit path:
+If a previous installation left stale adapter artifacts, remove them and restart:
 
 ```bash
-export AGENT_TERMINAL_BIN=/absolute/path/to/agent-terminal
+rm -f ~/.config/opencode/tools/terminal.ts
 ```
 
-The adapter derives project scope and default working directory from OpenCode's tool context. It
-uses the Git worktree when available; when OpenCode reports the filesystem root as the worktree for
-a non-Git directory, it scopes jobs to `context.directory`. Its `command` argument is executed by
-the user's absolute `$SHELL` with `-c`, falling back to `/bin/sh`.
+Restart OpenCode after copying or removing skill files.
+
+### Permissions
+
+This integration adds no dedicated `terminal_*` permissions. OpenCode's Bash authorization governs
+every invocation of `agent-terminal` because the skill runs the CLI as a standard Bash command.
+Structured external `workdir` and recognized filesystem commands may receive additional checks, but
+the embedded `--project` and `--cwd` arguments are not independently canonicalized or authorized by
+OpenCode. Bash remains unsandboxed: the model can invoke the CLI through Bash just as it would any
+other command on the host.
+
+### Cancellation
+
+In OpenCode, model actions can be cancelled mid-execution. Follow these rules:
+
+- Cancelled `start` or `stop` must be reconciled by a same-scope `list` or `read`. A cancelled
+  `start` may still have launched the job; a cancelled `stop` may not have cleaned it up.
+- Never automatically replay cancelled `send` or `press`. That the command was issued does not
+  prove the terminal consumed the input.
+- `read` and `list` are safe to retry after cancellation.
+
+### Project and working directory
+
+The CLI defaults `--project` to the invocation directory and `start` defaults `--cwd` to the
+project root. This skill passes an explicit stable `--project` on every call and passes `--cwd`
+when the intended working directory differs from the project root, so CLI behavior does not depend
+on the model's transient current directory inside the Bash tool.
 
 ## Lifecycle
 
@@ -145,7 +138,7 @@ Single Rust test:
 cargo test --test zellij_e2e start_read_stop_when_job_is_running -- --exact
 ```
 
-OpenCode adapter quality gate:
+OpenCode skill quality gate:
 
 ```bash
 cd opencode
@@ -153,11 +146,11 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-Single adapter test:
+Single skill test:
 
 ```bash
 cd opencode
-bun test -t 'start maps context'
+bun test -t 'teaches CLI commands'
 ```
 
 Real-Zellij integration tests create isolated controller sessions and remove them in test cleanup.
