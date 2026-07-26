@@ -214,7 +214,7 @@ authorized by OpenCode. Bash remains unsandboxed.
 
 ## Migration from the old adapter
 
-This skill replaces the TypeScript custom-tool adapter. Key differences:
+This skill replaces the previous tool-based integration. Key differences:
 
 - Invoke the CLI through Bash instead of calling the old TypeScript tool functions.
 - There are no custom tool-call forms. Every operation is a Bash command.
