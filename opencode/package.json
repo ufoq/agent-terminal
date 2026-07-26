@@ -8,8 +8,8 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "e2e:opencode": "cd .. && sudo bash scripts/e2e-opencode.sh",
-    "e2e:opencode:skip-prompt": "cd .. && sudo AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-opencode.sh"
+    "e2e:opencode": "cd .. && bash scripts/e2e-opencode.sh",
+    "e2e:opencode:skip-prompt": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-opencode.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",

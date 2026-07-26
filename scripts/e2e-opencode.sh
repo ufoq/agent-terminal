@@ -2,12 +2,11 @@
 
 set -Eeuo pipefail
 
-readonly REPO_ROOT="/home/agent/work"
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly SKILL_SOURCE="$REPO_ROOT/opencode/skills/agent-terminal/SKILL.md"
-readonly INSTALL_PATH="/usr/local/bin/agent-terminal"
 
 repo_owner="$(stat -c '%U' "$REPO_ROOT")"
-HOST_PATH="/usr/local/bin:/usr/bin:/bin:/sbin"
+HOST_PATH="$REPO_ROOT/target/release:/usr/local/bin:/usr/bin:/bin"
 if [[ -n $repo_owner && -d /home/$repo_owner/.cargo/bin ]]; then
   HOST_PATH="/home/$repo_owner/.cargo/bin:$HOST_PATH"
 fi
@@ -26,26 +25,16 @@ AGENT_TERMINAL_OPENCODE_CONFIG="${AGENT_TERMINAL_OPENCODE_CONFIG:-}"
 AGENT_TERMINAL_LITELLM_BASE_URL="${AGENT_TERMINAL_LITELLM_BASE_URL:-http://host.docker.internal:57002/v1}"
 AGENT_TERMINAL_LITELLM_API_KEY="${AGENT_TERMINAL_LITELLM_API_KEY:-local-no-secret}"
 
-if [[ $EUID -ne 0 ]]; then
-  printf 'error: scripts/e2e-opencode.sh must run as root; creating a test user and installing /usr/local/bin/agent-terminal require root privileges\n' >&2
-  exit 1
-fi
-
 readonly RUN_ID="$$"
-readonly WORKDIR="/home/$AGENT_TERMINAL_TEST_USER/test-opencode-run-$RUN_ID"
-readonly SANDBOX="/tmp/agent-terminal-e2e-$RUN_ID"
+readonly SHORT_BASE="/tmp/ate2e-$$"
+readonly WORKDIR="/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-$RUN_ID/workdir"
+readonly SANDBOX="/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-$RUN_ID"
 readonly CONFIG_DIR="$SANDBOX/config"
 readonly DATA_DIR="$SANDBOX/data"
 readonly CACHE_DIR="$SANDBOX/cache"
 readonly STATE_DIR="$SANDBOX/state"
-readonly ZELLIJ_SOCKET_DIR="$SANDBOX/zellij-sock"
+readonly ZELLIJ_SOCKET_DIR="$SHORT_BASE/z"
 readonly ARTIFACT_DIR="$SANDBOX/artifacts"
-readonly SETUP_LOG="/tmp/agent-terminal-e2e-setup-$RUN_ID.log"
-
-TEST_USER_READY=0
-REPO_PARENT_MODE_CHANGED=0
-REPO_PARENT_MODE=""
-
 cleanup() {
   local exit_status=$?
   local sessions=""
@@ -54,38 +43,25 @@ cleanup() {
   trap - EXIT INT TERM HUP
   set +e
 
-  if [[ $TEST_USER_READY -eq 1 && -d $ZELLIJ_SOCKET_DIR ]]; then
-    sessions="$(
-      runuser -u "$AGENT_TERMINAL_TEST_USER" -- \
-        env ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
-        zellij list-sessions --short --no-formatting 2>/dev/null
-    )"
+  if [[ -d $ZELLIJ_SOCKET_DIR ]]; then
+    sessions="$(env ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" zellij list-sessions --short --no-formatting 2>/dev/null || true)"
     while IFS= read -r session; do
       if [[ $session == agent-terminal-* ]]; then
-        runuser -u "$AGENT_TERMINAL_TEST_USER" -- \
-          env ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
-          zellij kill-session "$session" >/dev/null 2>&1
+        env ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" zellij kill-session "$session" >/dev/null 2>&1 || true
       fi
     done <<<"$sessions"
   fi
 
-  if [[ $AGENT_TERMINAL_CLEANUP != 1 && -d $WORKDIR && -d $ARTIFACT_DIR ]]; then
+  if [[ $AGENT_TERMINAL_CLEANUP != 1 && -d $ARTIFACT_DIR ]]; then
     rm -rf "$WORKDIR/artifacts"
     cp -a "$ARTIFACT_DIR" "$WORKDIR/artifacts"
-    chown -R "$AGENT_TERMINAL_TEST_USER:$TEST_GROUP" "$WORKDIR/artifacts"
   fi
-
-  rm -rf "$SANDBOX"
-  rm -f "$SETUP_LOG"
 
   if [[ $AGENT_TERMINAL_CLEANUP == 1 ]]; then
-    rm -rf "$WORKDIR"
-  elif [[ -d $WORKDIR ]]; then
-    printf 'Evidence retained at %s\n' "$WORKDIR"
-  fi
-
-  if [[ $REPO_PARENT_MODE_CHANGED -eq 1 ]]; then
-    chmod "$REPO_PARENT_MODE" /home/agent
+    rm -rf "$SANDBOX" "$SHORT_BASE"
+  else
+    printf 'Evidence retained at %s\n' "$SANDBOX"
+    rm -rf "$SHORT_BASE"
   fi
 
   exit "$exit_status"
@@ -96,38 +72,30 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-if [[ -n $AGENT_TERMINAL_BIN ]]; then
+if [[ -n ${AGENT_TERMINAL_BIN:-} ]]; then
   resolved_binary="$AGENT_TERMINAL_BIN"
-  : >"$SETUP_LOG"
 else
   resolved_binary="$REPO_ROOT/target/release/agent-terminal"
-  if ! command -v cargo >/dev/null 2>&1 && [[ -n ${SUDO_USER:-} && -f /home/$SUDO_USER/.cargo/env ]]; then
-    # shellcheck source=/dev/null
-    . "/home/$SUDO_USER/.cargo/env"
-  fi
   if ! command -v cargo >/dev/null 2>&1 && [[ -f $HOME/.cargo/env ]]; then
     # shellcheck source=/dev/null
     . "$HOME/.cargo/env"
   fi
-  if ! command -v cargo >/dev/null 2>&1; then
-    repo_owner="$(stat -c '%U' "$REPO_ROOT")"
-    if [[ -n $repo_owner ]]; then
-      export PATH="/home/$repo_owner/.cargo/bin:$PATH"
-      if [[ -f /home/$repo_owner/.cargo/env ]]; then
-        # shellcheck source=/dev/null
-        . "/home/$repo_owner/.cargo/env"
-      fi
-    fi
+  if ! command -v cargo >/dev/null 2>&1 && [[ -n ${repo_owner:-} && -f /home/$repo_owner/.cargo/env ]]; then
+    # shellcheck source=/dev/null
+    . "/home/$repo_owner/.cargo/env"
   fi
   if ! command -v cargo >/dev/null 2>&1; then
-    printf 'error: cargo not found on PATH and no .cargo/env to source\n' >&2
+    printf 'error: cargo not found on PATH\n' >&2
     exit 1
   fi
-  if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" >"$SETUP_LOG" 2>&1; then
+  setup_tmp="$(mktemp -d /tmp/agent-terminal-e2e-build-XXXXXX)"
+  if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" >"$setup_tmp/setup.log" 2>&1; then
     printf 'error: cargo build --release failed\n' >&2
-    cat "$SETUP_LOG" >&2
+    cat "$setup_tmp/setup.log" >&2
+    rm -rf "$setup_tmp"
     exit 1
   fi
+  rm -rf "$setup_tmp"
 fi
 
 if [[ ! -f $resolved_binary || ! -x $resolved_binary ]]; then
@@ -135,68 +103,40 @@ if [[ ! -f $resolved_binary || ! -x $resolved_binary ]]; then
   exit 1
 fi
 
-if [[ ! -f $INSTALL_PATH ]] || ! cmp -s "$resolved_binary" "$INSTALL_PATH"; then
-  install_tmp="$(mktemp /usr/local/bin/.agent-terminal.XXXXXX)"
-  install -o root -g root -m 0755 "$resolved_binary" "$install_tmp"
-  mv -f "$install_tmp" "$INSTALL_PATH"
-fi
-
-if ! id -u "$AGENT_TERMINAL_TEST_USER" >/dev/null 2>&1; then
-  useradd -m -s /bin/bash "$AGENT_TERMINAL_TEST_USER"
-fi
-
-TEST_GROUP="$(id -gn "$AGENT_TERMINAL_TEST_USER")"
-TEST_HOME="$(getent passwd "$AGENT_TERMINAL_TEST_USER" | cut -d: -f6)"
-if [[ -z $TEST_HOME ]]; then
-  printf 'error: could not resolve home directory for test user %s\n' "$AGENT_TERMINAL_TEST_USER" >&2
-  exit 1
-fi
-TEST_USER_READY=1
-
-if ! runuser -u "$AGENT_TERMINAL_TEST_USER" -- test -x "$REPO_ROOT/opencode"; then
-  REPO_PARENT_MODE="$(stat -c '%a' /home/agent)"
-  chmod o+x /home/agent
-  REPO_PARENT_MODE_CHANGED=1
-fi
-if ! runuser -u "$AGENT_TERMINAL_TEST_USER" -- test -x "$REPO_ROOT/opencode"; then
-  printf 'error: test user %s cannot traverse %s\n' "$AGENT_TERMINAL_TEST_USER" "$REPO_ROOT/opencode" >&2
-  exit 1
-fi
-
-install -d -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" "$TEST_HOME/.config/opencode/skills/agent-terminal"
-install -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" -m 0644 \
-  "$SKILL_SOURCE" "$TEST_HOME/.config/opencode/skills/agent-terminal/SKILL.md"
-
 if [[ -e $WORKDIR || -e $SANDBOX ]]; then
   printf 'error: per-run path already exists for PID %s\n' "$RUN_ID" >&2
   exit 1
 fi
 
-install -d -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" "$WORKDIR"
-install -d -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" \
+mkdir -p "$SANDBOX"
+install -d \
+  "$SANDBOX" \
+  "$WORKDIR" \
+  "$CONFIG_DIR" \
+  "$CONFIG_DIR/skills" \
   "$CONFIG_DIR/skills/agent-terminal" \
   "$DATA_DIR" \
   "$CACHE_DIR" \
   "$STATE_DIR" \
   "$ZELLIJ_SOCKET_DIR" \
   "$ARTIFACT_DIR"
-install -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" -m 0644 \
-  "$SKILL_SOURCE" "$CONFIG_DIR/skills/agent-terminal/SKILL.md"
+install -m 0644 "$SKILL_SOURCE" "$CONFIG_DIR/skills/agent-terminal/SKILL.md"
 
 if [[ -n $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
   if [[ ! -f $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
     printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG points to a missing file: %s\n' "$AGENT_TERMINAL_OPENCODE_CONFIG" >&2
     exit 1
   fi
-  install -o "$AGENT_TERMINAL_TEST_USER" -g "$TEST_GROUP" -m 0644 \
-    "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
+  install -m 0644 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
 else
   cat >"$CONFIG_DIR/opencode.json" <<OPENCODE_CONFIG
 {
   "\$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
-  "permission": { "*": "allow" },
+  "share": "disabled",
+  "permission": { "*": "allow", "skill": { "*": "allow" } },
   "disabled_providers": ["opencode"],
+  "plugin": [],
   "provider": {
     "litellm": {
       "npm": "@ai-sdk/openai-compatible",
@@ -221,7 +161,6 @@ else
 }
 OPENCODE_CONFIG
 fi
-chown "$AGENT_TERMINAL_TEST_USER:$TEST_GROUP" "$CONFIG_DIR/opencode.json"
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
 cat >"$PROMPT_FILE" <<EOF
@@ -335,7 +274,7 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]] && command -v opencode >/dev/nul
   printf '\n== OpenCode prompt e2e ==\n'
   # OPENCODE_RUN_FLAGS is intentionally word-split so callers can supply multiple CLI flags.
   # shellcheck disable=SC2086
-  if ! opencode run --auto --format json --dir "$WORKDIR" --model "$OPENCODE_MODEL" \
+  if ! opencode --pure run --auto --format json --dir "$WORKDIR" --model "$OPENCODE_MODEL" \
     $OPENCODE_RUN_FLAGS -- "$(cat "$PROMPT_FILE")" \
     >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
     cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
@@ -373,28 +312,38 @@ printf '\nAll executed e2e phases passed.\n'
 INNER
 
 chmod 0755 "$INNER_SCRIPT"
-chown -R "$AGENT_TERMINAL_TEST_USER:$TEST_GROUP" "$SANDBOX" "$WORKDIR"
-cp "$SETUP_LOG" "$ARTIFACT_DIR/setup.log"
-chown "$AGENT_TERMINAL_TEST_USER:$TEST_GROUP" "$ARTIFACT_DIR/setup.log"
 
-printf 'Running e2e phases as %s; artifacts: %s\n' "$AGENT_TERMINAL_TEST_USER" "$ARTIFACT_DIR"
-runuser -u "$AGENT_TERMINAL_TEST_USER" -- \
-  env \
-    HOME="$TEST_HOME" \
-    USER="$AGENT_TERMINAL_TEST_USER" \
-    LOGNAME="$AGENT_TERMINAL_TEST_USER" \
-    PATH="$HOST_PATH" \
-    OPENCODE_CONFIG_DIR="$CONFIG_DIR" \
-    XDG_CONFIG_HOME="$CONFIG_DIR" \
-    XDG_DATA_HOME="$DATA_DIR" \
-    XDG_CACHE_HOME="$CACHE_DIR" \
-    XDG_STATE_HOME="$STATE_DIR" \
-    ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
-    AGENT_TERMINAL_STATE="$STATE_DIR" \
-    AGENT_TERMINAL_ENABLE_PROMPT_E2E="$AGENT_TERMINAL_ENABLE_PROMPT_E2E" \
-    OPENCODE_MODEL="$OPENCODE_MODEL" \
-    OPENCODE_RUN_FLAGS="$OPENCODE_RUN_FLAGS" \
-    WORKDIR="$WORKDIR" \
-    ARTIFACT_DIR="$ARTIFACT_DIR" \
-    PROMPT_FILE="$PROMPT_FILE" \
-    script -q -e -E never -c "$INNER_SCRIPT" "$ARTIFACT_DIR/transcript.log"
+
+printf 'Running e2e phases as %s; artifacts: %s\n' "$(id -un)" "$ARTIFACT_DIR"
+env -i \
+  HOME="$(getent passwd "$(id -un)" | cut -d: -f6)" \
+  USER="$(id -un)" \
+  LOGNAME="$(id -un)" \
+  SHELL=/bin/bash \
+  PATH="$HOST_PATH" \
+  LANG=C.UTF-8 \
+  TERM=xterm-256color \
+  HISTFILE=/dev/null \
+  BASH_ENV=/dev/null \
+  ENV=/dev/null \
+  ZDOTDIR="$SANDBOX/home" \
+  XDG_CONFIG_HOME="$CONFIG_DIR" \
+  XDG_DATA_HOME="$DATA_DIR" \
+  XDG_CACHE_HOME="$CACHE_DIR" \
+  XDG_STATE_HOME="$STATE_DIR" \
+  OPENCODE_CONFIG_DIR="$CONFIG_DIR" \
+  OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+  OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
+  OPENCODE_DISABLE_CLAUDE_CODE=1 \
+  OPENCODE_DISABLE_AUTOUPDATE=1 \
+  OPENCODE_DISABLE_MODELS_FETCH=1 \
+  OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
+  ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
+  AGENT_TERMINAL_STATE="$STATE_DIR" \
+  AGENT_TERMINAL_ENABLE_PROMPT_E2E="$AGENT_TERMINAL_ENABLE_PROMPT_E2E" \
+  OPENCODE_MODEL="$OPENCODE_MODEL" \
+  OPENCODE_RUN_FLAGS="$OPENCODE_RUN_FLAGS" \
+  WORKDIR="$WORKDIR" \
+  ARTIFACT_DIR="$ARTIFACT_DIR" \
+  PROMPT_FILE="$PROMPT_FILE" \
+  script -q -e -E never -c "$INNER_SCRIPT" "$ARTIFACT_DIR/transcript.log"

@@ -119,18 +119,18 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 ## End-to-end testing
 
-`scripts/e2e-opencode.sh` runs the OpenCode skill end-to-end against a real Zellij server.
-It requires root privileges because it creates an isolated Unix user (`tester-e2e` by
-default), installs the built binary to `/usr/local/bin/agent-terminal`, copies the skill
-into the user's OpenCode config, and runs the tests inside a `script` PTY.
+`scripts/e2e-opencode.sh` runs the OpenCode skill end-to-end against a real Zellij server
+as the invoking user. It does not require root or create a separate Unix account. Isolation
+is achieved by redirecting OpenCode's config/data/cache/state directories into a temporary
+sandbox and running `opencode --pure run` so no external plugins are loaded.
 
 ```bash
-sudo bash scripts/e2e-opencode.sh
+bash scripts/e2e-opencode.sh
 ```
 
 Environment variables:
 
-- `AGENT_TERMINAL_TEST_USER` — Unix user to run as (default `tester-e2e`).
+- `AGENT_TERMINAL_TEST_USER` — used only as a sandbox label (default `tester-e2e`).
 - `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the full `opencode run` prompt lifecycle
   (default `1`). Set to `0` to skip the LLM-driven phase and run only the skill
   contract and direct CLI smoke tests.
@@ -138,6 +138,8 @@ Environment variables:
   `litellm/ollama-cloud/deepseek-v4-flash`).
 - `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the runner builds
   `target/release/agent-terminal`.
+- `AGENT_TERMINAL_OPENCODE_CONFIG` — path to a custom `opencode.json` to use instead of
+  the generated minimal config.
 
 Run from the `opencode/` directory with Bun:
 
@@ -147,8 +149,11 @@ bun run e2e:opencode
 bun run e2e:opencode:skip-prompt
 ```
 
-Artifacts are retained under `/home/$AGENT_TERMINAL_TEST_USER/test-opencode-run-<pid>/artifacts/`
+Artifacts are retained under `/tmp/agent-terminal-e2e-$AGENT_TERMINAL_TEST_USER-<pid>/`
 unless `AGENT_TERMINAL_CLEANUP=1` is set.
+
+This harness is configuration isolation, not a security sandbox: the LLM still executes Bash
+as the invoking user. Run it only on throwaway machines or isolated CI runners.
 
 ## Development
 
