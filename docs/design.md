@@ -1,6 +1,6 @@
 # agent-terminal design
 
-Status: implemented and integration-tested with real OpenCode.
+Status: Rust CLI implemented; OpenCode TypeScript adapter removed; OpenCode/Pi skill is CLI-oriented.
 
 ## 1. Product rule
 
@@ -9,6 +9,9 @@ The agent understands **jobs**, not Zellij.
 A job is a named, project-scoped terminal process that can outlive one tool call, expose its current screen and exit state, accept later input, and be cleaned up explicitly. Sessions, tabs, panes, focus, sockets, and Zellij IDs are private implementation details.
 
 The interface is optimized for coding agents first and direct CLI users second.
+
+<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
+> **Obsolete after pivot:**
 
 ## 2. Why the previous surface was rejected
 
@@ -23,6 +26,11 @@ OpenCode natively turns named exports into separate tools. Existing coding agent
 - no top-level action enum.
 
 The design also rejects a traditional process-manager surface. Separate `status`, `output`, `wait`, and `cleanup` commands would be flexible, but they make the agent orchestrate the controller instead of doing its real task.
+
+<!-- END_OBSOLETE_AFTER_PIVOT -->
+
+<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
+> **Obsolete after pivot:**
 
 ## 3. Model-facing OpenCode tools
 
@@ -100,6 +108,11 @@ terminal_list()
 
 Use after context loss or when the agent no longer remembers the job name. It returns concise summaries and never returns screen content.
 
+<!-- END_OBSOLETE_AFTER_PIVOT -->
+
+<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
+> **Obsolete after pivot:**
+
 ## 4. Why there are exactly six tools
 
 | Omitted operation | Reason |
@@ -113,6 +126,8 @@ Use after context loss or when the agent no longer remembers the job name. It re
 | raw Zellij action | It would break ownership and force the agent to reason about panes |
 
 No persistent output log or completion notification is included. Those require a runner or service layer and are not needed for the minimal PTY workflow.
+
+<!-- END_OBSOLETE_AFTER_PIVOT -->
 
 ## 5. Standalone CLI
 
@@ -136,13 +151,7 @@ Global options:
 --state-dir <PATH> Override state root for testing or isolated use
 ```
 
-The core CLI takes an argv after `--`; it never parses a shell string. The OpenCode adapter accepts a command string for model ergonomics. It uses `SHELL` only when it names an absolute executable, otherwise falls back to `/bin/sh`, and invokes non-login `-c` mode:
-
-```text
-agent-terminal --project <scope> start <job> --cwd <cwd> -- <shell> -c <command>
-```
-
-The command remains one argv element. The adapter does not concatenate or re-quote it. The CLI and OpenCode tool both submit Enter after `send` by default; `--no-submit` maps to `submit=false`.
+The core CLI takes an argv after `--`; it never parses a shell string.
 
 Exit codes:
 
@@ -165,10 +174,8 @@ Success:
 Error:
 
 ```json
-{"status":"error","error":{"code":"job_not_found","message":"No job named 'api'.","hint":"Run terminal_list to see known jobs."}}
+{"status":"error","error":{"code":"job_not_found","message":"No job named 'api'.","hint":"Run list to see known jobs."}}
 ```
-
-The TypeScript adapter parses stdout on every exit code. A valid error envelope is returned to the model as a normal structured tool result so the model can recover. It throws only when the binary produced no valid envelope.
 
 ### Operation data
 
@@ -354,8 +361,6 @@ Rules:
 - compact serde JSON by default, tracing to stderr;
 - Zellij 0.44.3 is the minimum tested version.
 
-The TypeScript adapter contains only schemas, context-to-CLI argument mapping, cancellation-aware process spawning, and JSON result translation. It contains no job lifecycle logic.
-
 ## 11. Verification contract for implementation
 
 1. Start/read/stop: start a dev server, read `running` plus its ready screen, stop it, and prove the pane/session is cleaned up.
@@ -365,7 +370,11 @@ The TypeScript adapter contains only schemas, context-to-CLI argument mapping, c
 5. Recovery: distinguish duplicate name, unknown name, exited job, and externally lost pane.
 6. Isolation: run same-named jobs in two project roots without state/session collision.
 7. Crash recovery: terminate the controller between durable pending state and each Zellij mutation, then prove the next operation adopts or removes exactly the nonce-matched pane.
+
+<!-- BEGIN_OBSOLETE_AFTER_PIVOT -->
+> **Obsolete after pivot:**
 8. OpenCode surface: load six named exports, cancel a running adapter call through `context.abort`, and verify no action-enum tool exists.
+<!-- END_OBSOLETE_AFTER_PIVOT -->
 
 Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij binary. Unit tests use a fake backend only for deterministic domain/error paths.
 
@@ -387,7 +396,7 @@ Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij bin
 
 ## 14. Evidence used
 
-- OpenCode custom tools and named exports: <https://opencode.ai/docs/custom-tools/>
+- Extension-authoring reference for coding agents: <https://opencode.ai/docs/custom-tools/>
 - OpenAI function-tool schema guidance: <https://platform.openai.com/docs/guides/function-calling>
 - Anthropic agent-tool design principles: <https://www.anthropic.com/engineering/writing-tools-for-agents>
 - Zellij programmatic control: <https://zellij.dev/documentation/programmatic-control.html>
