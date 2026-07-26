@@ -152,8 +152,7 @@ describe("agent-terminal CLI skill contract", () => {
 
   test("documents permission model with no dedicated terminal permissions", async () => {
     const skill = await readFile(skillPath, "utf8")
-    expect(skill).toContain("no dedicated")
-    expect(skill).toContain("permissions")
+    expect(skill).toContain("does not add its own permission category")
     expect(skill).toContain("Bash authorization")
     expect(skill).toContain("unsandboxed")
   })
@@ -166,9 +165,12 @@ describe("agent-terminal CLI skill contract", () => {
     expect(skill).toContain("'t'")
   })
 
-  test("contains migration from old adapter section", async () => {
+  test("contains no adapter or migration framing", async () => {
     const skill = await readFile(skillPath, "utf8")
-    expect(skill).toContain("Migration")
+    const lower = skill.toLowerCase()
+    expect(lower).not.toContain("migration")
+    expect(lower).not.toContain("adapter")
+    expect(lower).not.toContain("tool-based integration")
   })
 
   const legacyDesc = ["has no legacy", "terminal" + "_* tool syntax zellij action or pane-id"].join(
@@ -198,7 +200,7 @@ describe("agent-terminal CLI skill contract", () => {
   })
 })
 
-describe("migration: adapter artifacts are absent", () => {
+describe("adapter artifacts are absent", () => {
   const d1 = `${["opencode", "tools", "terminal.ts"].join("/")} no longer exists`
   test(d1, async () => {
     const p = resolve(projectRoot, "opencode", "tools", "terminal.ts")

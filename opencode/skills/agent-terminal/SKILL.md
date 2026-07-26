@@ -206,19 +206,8 @@ When a Bash invocation is cancelled mid-execution:
 
 ## Permissions
 
-This skill adds no dedicated `terminal_*` permissions. OpenCode's Bash authorization governs
+This skill does not add its own permission category. OpenCode's Bash authorization governs
 every invocation of `agent-terminal` because the skill runs the CLI as a standard Bash command.
 Structured external `workdir` and recognized filesystem commands may receive additional checks,
 but the embedded `--project` and `--cwd` arguments are not independently canonicalized or
 authorized by OpenCode. Bash remains unsandboxed.
-
-## Migration from the old adapter
-
-This skill replaces the previous tool-based integration. Key differences:
-
-- Invoke the CLI through Bash instead of calling the old TypeScript tool functions.
-- There are no custom tool-call forms. Every operation is a Bash command.
-- `--project` must be explicit on every call; the CLI no longer receives project scope from
-  the host.
-- `$PROJECT` and `$CWD` do not persist across Bash calls.
-- Job names, key names, lifecycle states, and error codes are unchanged.
