@@ -5,8 +5,8 @@ import { resolve } from "node:path"
 const projectRoot = resolve(import.meta.dir, "../..")
 const skillPath = resolve(projectRoot, "opencode/skills/agent-terminal/SKILL.md")
 
-describe("agent-terminal skill bundle", () => {
-  test("uses valid focused frontmatter", async () => {
+describe("agent-terminal CLI skill contract", () => {
+  test("has valid frontmatter with required fields", async () => {
     const skill = await readFile(skillPath, "utf8")
     expect(skill.startsWith("---\n")).toBe(true)
     const closingMarker = skill.indexOf("\n---\n", 4)
@@ -16,36 +16,181 @@ describe("agent-terminal skill bundle", () => {
     expect(frontmatter).toContain("name: agent-terminal")
     const description = frontmatter.split("\n").find((line) => line.startsWith("description: "))
     expect(description).toBeDefined()
-    expect(description?.length ?? 0).toBeLessThanOrEqual(1_024)
+    expect(description?.startsWith('description: "')).toBe(true)
+    expect(description?.length).toBeLessThanOrEqual(1_024)
+    expect(frontmatter).toContain("compatibility:")
+    expect(frontmatter).toContain("project: agent-terminal")
+    expect(frontmatter).toContain('version: "1"')
   })
 
-  test("teaches all tools and routing without leaking backend commands", async () => {
+  test("teaches CLI commands with --project for all six verbs", async () => {
     const skill = await readFile(skillPath, "utf8")
-    for (const toolName of [
-      "terminal_start",
-      "terminal_read",
-      "terminal_send",
-      "terminal_press",
-      "terminal_stop",
-      "terminal_list",
-    ]) {
-      expect(skill).toContain(toolName)
+    for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
+      expect(skill).toContain(`agent-terminal --project "$PROJECT" ${verb}`)
     }
+  })
 
-    expect(skill).toMatch(/(?:Bash.*short foreground|short foreground.*Bash)/s)
-    expect(skill).toContain("job_still_running")
-    expect(skill).toContain("force=true")
+  test("uses --cwd for start and documents /bin/sh -c for shell syntax", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toMatch(/start.*--cwd/)
+    expect(skill).toContain('--cwd "$CWD"')
+    expect(skill).toContain("/bin/sh -c")
+  })
+
+  test("documents --no-submit and --force flags", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("--no-submit")
+    expect(skill).toContain("--force")
+  })
+
+  test("derives PROJECT from git rev-parse and CWD from pwd -P", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("git rev-parse --show-toplevel")
+    expect(skill).toContain('CWD="$(pwd -P)"')
+  })
+
+  test("notes PROJECT and CWD do not persist across Bash calls", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    const lower = skill.toLowerCase()
+    const mentionsNonPersistence = [
+      "do not persist",
+      "does not persist",
+      "re-derived",
+      "re-derive",
+    ].some((phrase) => lower.includes(phrase))
+    expect(mentionsNonPersistence).toBe(true)
+  })
+
+  test("documents JSON envelope semantics", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    for (const term of ["status", "ok", "error", "data", "code", "message", "hint"]) {
+      expect(skill).toContain(term)
+    }
+  })
+
+  test("documents exit code semantics", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toMatch(/\| 1 \|/)
+    expect(skill).toMatch(/\| 2 \|/)
+    expect(skill).toContain("Expected job or lock error")
+    expect(skill).toContain("Invalid input")
+  })
+
+  test("documents lifecycle states running exited lost", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    for (const state of ["running", "exited", "lost"]) {
+      expect(skill).toContain(state)
+    }
+  })
+
+  test("documents all five recovery codes", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    for (const code of [
+      "job_exists",
+      "job_not_found",
+      "job_not_running",
+      "job_still_running",
+      "lock_busy",
+    ]) {
+      expect(skill).toContain(code)
+    }
+  })
+
+  test("documents job name grammar", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("[a-z0-9]")
+    expect(skill).toContain("{0,63}")
+  })
+
+  test("documents accepted named key grammar", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    for (const key of [
+      "Enter",
+      "Tab",
+      "Esc",
+      "Backspace",
+      "Delete",
+      "Insert",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown",
+      "Up",
+      "Down",
+      "Left",
+      "Right",
+    ]) {
+      expect(skill).toContain(key)
+    }
+    expect(skill).toMatch(/F1[\s\S]*F12/)
+    expect(skill).toContain("Ctrl+")
+    expect(skill).toContain("Alt+")
+  })
+
+  test("distinguishes persistent jobs from foreground Bash", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("persistent")
+    const lower = skill.toLowerCase()
+    expect(lower).toContain("foreground")
+  })
+
+  test("teaches screen boundedness and state-over-screen rule", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("truncated")
+    expect(skill).toContain("State, not screen activity, determines completion")
+    expect(skill.toLowerCase()).toContain("read before")
+  })
+
+  test("documents cleanup and cancellation rules", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("authoritative")
+    expect(skill).toContain("Cancelled")
+    expect(skill).toContain("reconciled")
+    expect(skill).toContain("Never automatically replay")
+    expect(skill).toContain("safe to retry")
+  })
+
+  test("documents permission model with no dedicated terminal permissions", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("no dedicated")
+    expect(skill).toContain("permissions")
+    expect(skill).toContain("Bash authorization")
+    expect(skill).toContain("unsandboxed")
+  })
+
+  test("documents shell quoting contract", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain('"$PROJECT"')
+    expect(skill).toContain('"$CWD"')
+    expect(skill).toContain("'don'")
+    expect(skill).toContain("'t'")
+  })
+
+  test("contains migration from old adapter section", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("Migration")
+  })
+
+  test("has no legacy terminal_* tool syntax zellij action or pane-id", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    const legacyPrefix = "terminal" + "_"
+    for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
+      expect(skill).not.toContain(legacyPrefix + verb)
+    }
     expect(skill.toLowerCase()).not.toContain("zellij action")
     expect(skill).not.toContain("pane-id")
-    expect(skill).not.toMatch(/terminal_(?:start|read|send|press|stop|list)\(/)
+  })
+
+  test("skill file is under 500 lines", async () => {
+    const skill = await readFile(skillPath, "utf8")
     expect(skill.split("\n").length).toBeLessThan(500)
   })
 
-  test("repository layout can be copied directly into OpenCode config", async () => {
-    const adapter = await readFile(resolve(projectRoot, "opencode/tools/terminal.ts"), "utf8")
-    const readme = await readFile(resolve(projectRoot, "README.md"), "utf8")
-    expect(adapter).toContain("export const start = tool(")
-    expect(readme).toContain("opencode/tools")
-    expect(readme).toContain("opencode/skills")
+  test("rejects missing CLI example", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
+      const hasExample = skill.includes(`agent-terminal --project "$PROJECT" ${verb}`)
+      expect(hasExample).toBe(true)
+    }
   })
 })
