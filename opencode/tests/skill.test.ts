@@ -171,7 +171,9 @@ describe("agent-terminal CLI skill contract", () => {
     expect(skill).toContain("Migration")
   })
 
-  const legacyDesc = ["has no legacy", "terminal" + "_* tool syntax zellij action or pane-id"].join(" ")
+  const legacyDesc = ["has no legacy", "terminal" + "_* tool syntax zellij action or pane-id"].join(
+    " ",
+  )
   test(legacyDesc, async () => {
     const skill = await readFile(skillPath, "utf8")
     const legacyPrefix = "terminal" + "_"
@@ -197,19 +199,19 @@ describe("agent-terminal CLI skill contract", () => {
 })
 
 describe("migration: adapter artifacts are absent", () => {
-  const d1 = ["opencode", "tools", "terminal.ts"].join("/") + " no longer exists"
+  const d1 = `${["opencode", "tools", "terminal.ts"].join("/")} no longer exists`
   test(d1, async () => {
     const p = resolve(projectRoot, "opencode", "tools", "terminal.ts")
     await expect(access(p)).rejects.toThrow()
   })
 
-  const d2 = ["opencode", "tests", "terminal.test.ts"].join("/") + " no longer exists"
+  const d2 = `${["opencode", "tests", "terminal.test.ts"].join("/")} no longer exists`
   test(d2, async () => {
     const p = resolve(projectRoot, "opencode", "tests", "terminal.test.ts")
     await expect(access(p)).rejects.toThrow()
   })
 
-  const d3 = "package.json contains no " + ["@opencode-ai", "plugin"].join("/")
+  const d3 = `package.json contains no ${["@opencode-ai", "plugin"].join("/")}`
   test(d3, async () => {
     const p = resolve(projectRoot, "opencode/package.json")
     const pkg = await readFile(p, "utf8")
@@ -217,7 +219,7 @@ describe("migration: adapter artifacts are absent", () => {
     expect(pkg).not.toContain(forbidden)
   })
 
-  const d4 = "tsconfig.json does not include " + ["tools", "**", "*.ts"].join("/")
+  const d4 = `tsconfig.json does not include ${["tools", "**", "*.ts"].join("/")}`
   test(d4, async () => {
     const p = resolve(projectRoot, "opencode/tsconfig.json")
     const tsconfig = await readFile(p, "utf8")
@@ -226,7 +228,7 @@ describe("migration: adapter artifacts are absent", () => {
   })
 
   const prefix = "terminal" + "_"
-  const d5 = "SKILL.md contains no " + prefix + "* tool-call syntax"
+  const d5 = `SKILL.md contains no ${prefix}* tool-call syntax`
   test(d5, async () => {
     const skill = await readFile(skillPath, "utf8")
     for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
