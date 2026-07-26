@@ -2,9 +2,9 @@
 
 mod concurrency;
 mod harness;
-mod input {}
+mod input;
 mod isolation;
 mod lifecycle;
-mod recovery {}
-mod restart {}
-mod screen {}
+mod recovery;
+mod restart;
+mod screen;

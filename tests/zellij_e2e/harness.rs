@@ -116,19 +116,80 @@ impl Harness {
 
     pub fn kill_session_externally(&self) -> Result<(), Box<dyn std::error::Error>> {
         let session = self.session_name()?;
-        let output = Command::new("zellij")
+        self.zellij_ok(&["kill-session", session.as_str()])
+    }
+
+    pub fn zellij(&self, args: &[&str]) -> Result<Output, std::io::Error> {
+        Command::new("zellij")
             .env("ZELLIJ_SOCKET_DIR", &self.socket_dir)
-            .args(["kill-session", session.as_str()])
-            .output()?;
+            .args(args)
+            .output()
+    }
+
+    pub fn zellij_ok(&self, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let output = self.zellij(args)?;
         if output.status.success() {
             Ok(())
         } else {
             Err(format!(
-                "could not kill Zellij session {session:?}: {}",
+                "zellij {} failed: {}",
+                args.join(" "),
                 String::from_utf8_lossy(&output.stderr)
             )
             .into())
         }
+    }
+
+    pub fn list_panes(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        let output = self.zellij(&["action", "list-panes", "--json"])?;
+        let body: Value = serde_json::from_slice(&output.stdout)?;
+        if !output.status.success() {
+            return Err(format!(
+                "list-panes failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(body)
+    }
+
+    pub fn pane_id(&self, title_prefix: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let list = self.list_panes()?;
+        let panes = list
+            .as_array()
+            .ok_or("list-panes did not return an array")?;
+        for pane in panes {
+            let pane_title = pane["title"].as_str().unwrap_or("");
+            if pane_title.starts_with(title_prefix) {
+                let id = pane["id"].as_u64().ok_or("pane has no numeric id")?;
+                return Ok(id.to_string());
+            }
+        }
+        Err(format!("no pane with title prefix {title_prefix:?}").into())
+    }
+
+    pub fn close_pane_externally(&self, pane_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.zellij_ok(&["action", "close-pane", "--pane-id", pane_id])
+    }
+
+    pub fn rename_pane_externally(
+        &self,
+        pane_id: &str,
+        title: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.zellij_ok(&["action", "rename-pane", "--pane-id", pane_id, title])
+    }
+
+    pub fn run_pane_externally(
+        &self,
+        name: &str,
+        cwd: &Path,
+        command: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut args = vec!["run", "--name", name, "--cwd"];
+        args.push(cwd.to_str().ok_or("cwd is not UTF-8")?);
+        args.extend(command);
+        self.zellij_ok(&args)
     }
 }
 

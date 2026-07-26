@@ -279,3 +279,152 @@ fn screen_is_ansi_stripped_utf8_safe_and_bounded() -> Result<(), Box<dyn std::er
     harness.run_ok(&["stop", "screen"])?;
     Ok(())
 }
+
+#[test]
+fn immediate_zero_exit_has_readable_held_pane() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok("zero", "exit 0")?;
+
+    let read = harness.read_until("zero", |body| body["data"]["state"] == "exited")?;
+    assert_eq!(read["data"]["state"], "exited");
+    assert_eq!(read["data"]["exit_code"], 0);
+    assert_eq!(read["data"]["screen_available"], true);
+    Ok(())
+}
+
+#[test]
+fn maximum_shell_exit_code_is_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok("maximum", "exit 255")?;
+
+    let read = harness.read_until("maximum", |body| body["data"]["state"] == "exited")?;
+    assert_eq!(read["data"]["exit_code"], 255);
+    Ok(())
+}
+
+#[test]
+fn self_signal_trap_exit_is_observed() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok(
+        "self-signal",
+        "trap 'printf term-seen; exit 42' TERM; kill -TERM $$",
+    )?;
+
+    let read = harness.read_until("self-signal", |body| {
+        body["data"]["state"] == "exited"
+            && body["data"]["screen"]
+                .as_str()
+                .is_some_and(|screen| screen.contains("term-seen"))
+    })?;
+    assert_eq!(read["data"]["state"], "exited");
+    assert_eq!(read["data"]["exit_code"], 42);
+    Ok(())
+}
+
+#[test]
+fn graceful_stop_captures_interrupt_trap_output() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok(
+        "graceful",
+        "trap 'printf interrupted; exit 0' INT; printf ready; while :; do sleep 1; done",
+    )?;
+    harness.read_until("graceful", |body| {
+        body["data"]["screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("ready"))
+    })?;
+
+    let stop = harness.run_ok(&["stop", "graceful"])?;
+    assert_eq!(stop["data"]["forced"], false);
+    assert!(
+        stop["data"]["last_screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("interrupted"))
+    );
+    Ok(())
+}
+
+#[test]
+fn forced_stop_captures_last_visible_screen() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok(
+        "forced",
+        "trap '' INT; printf before-force; while :; do sleep 1; done",
+    )?;
+    harness.read_until("forced", |body| {
+        body["data"]["screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("before-force"))
+    })?;
+
+    let stop = harness.run_ok(&["stop", "forced", "--force"])?;
+    assert_eq!(stop["data"]["forced"], true);
+    assert!(
+        stop["data"]["last_screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("before-force"))
+    );
+    Ok(())
+}
+
+#[test]
+fn list_reports_mixed_running_and_exited_jobs() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok("live", "while :; do sleep 1; done")?;
+    harness.start_ok("done", "exit 6")?;
+    harness.read_until("done", |body| body["data"]["state"] == "exited")?;
+
+    let list = harness.run_ok(&["list"])?;
+    let jobs = list["data"]["jobs"]
+        .as_array()
+        .ok_or("list jobs are not an array")?;
+    assert!(
+        jobs.iter()
+            .any(|job| job["job"] == "live" && job["state"] == "running")
+    );
+    assert!(
+        jobs.iter().any(|job| {
+            job["job"] == "done" && job["state"] == "exited" && job["exit_code"] == 6
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn command_stdin_and_stdout_are_ptys() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.run_ok(&[
+        "start",
+        "pty",
+        "--",
+        "/bin/sh",
+        "-c",
+        "if [ -t 0 ] && [ -t 1 ]; then printf pty=yes; exit 0; else printf pty=no; exit 1; fi",
+    ])?;
+
+    let read = harness.read_until("pty", |body| {
+        body["data"]["state"] == "exited"
+            && body["data"]["screen"]
+                .as_str()
+                .is_some_and(|screen| screen.contains("pty=yes"))
+    })?;
+    assert_eq!(read["data"]["exit_code"], 0);
+    Ok(())
+}
+
+#[test]
+fn held_exited_pane_screen_is_stable_across_reads() -> Result<(), Box<dyn std::error::Error>> {
+    let harness = Harness::new()?;
+    harness.start_ok("stable", "printf stable-marker; exit 4")?;
+
+    let first = harness.read_until("stable", |body| {
+        body["data"]["state"] == "exited"
+            && body["data"]["screen"]
+                .as_str()
+                .is_some_and(|screen| screen.contains("stable-marker"))
+    })?;
+    let second = harness.run_ok(&["read", "stable"])?;
+    assert_eq!(second["data"]["exit_code"], first["data"]["exit_code"]);
+    assert_eq!(second["data"]["screen"], first["data"]["screen"]);
+    Ok(())
+}
