@@ -30,13 +30,14 @@ Global options:
 ```text
 --project <PATH>   Project identity and state scope; defaults to the nearest Git root,
                    or the current directory when not inside a Git repository
---cwd <PATH>       Working directory for start; defaults to the invocation directory
 --pretty           Pretty-print JSON; compact JSON is the default
 -v, -vv, -vvv      Stderr diagnostic level
 --state-dir <PATH> Override state root for testing or isolated use
 ```
 
-The core CLI takes an argv after `--`; it never parses a shell string. Defaulting `--project` to the Git root and `--cwd` to the invocation directory removes the need for the agent to derive and pass these values on every call.
+`start` additionally accepts `--cwd <PATH>`; it defaults to the invocation directory.
+
+The core CLI takes an argv after `--`; it never parses a shell string. Defaulting `--project` to the Git root and `start --cwd` to the invocation directory removes the need for the agent to derive and pass these values on every call.
 
 Exit codes:
 

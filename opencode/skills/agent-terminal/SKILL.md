@@ -19,7 +19,7 @@ Start a job. Everything after `--` is passed as the command argv.
 
 ```bash
 agent-terminal start dev-server -- npm run dev
-agent-terminal start build --cwd ./packages/api -- npm run build
+agent-terminal start api-build --cwd ./packages/api -- npm run build
 agent-terminal start build -- /bin/sh -c 'make -j"$(nproc)" 2>&1 | tee build.log'
 ```
 
@@ -40,7 +40,7 @@ Press named keys.
 
 ```bash
 agent-terminal press debugger -- Down Enter
-agent-terminal press process -- Ctrl+C
+agent-terminal press pager -- Space
 ```
 
 Stop a job. Use `--force` only if a graceful stop reports `job_still_running`.
@@ -96,7 +96,9 @@ Common recovery codes:
 
 - `job_exists` — read or stop the existing job instead of starting another.
 - `job_not_found` — run `list` and check the project scope.
+- `job_not_running` — read the job before sending more input.
 - `job_still_running` — retry `stop` with `--force` if forced closure is acceptable.
+- `lock_busy` — do useful work and retry once later; do not spin.
 
 The `screen` field on `read` is a bounded visible snapshot (newest 200 lines, 32 KiB), not a complete log. For complete logs, redirect output inside the job command.
 

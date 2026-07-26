@@ -72,7 +72,13 @@ describe("agent-terminal CLI skill contract", () => {
 
   test("documents recovery codes", async () => {
     const skill = await readFile(skillPath, "utf8")
-    for (const code of ["job_exists", "job_not_found", "job_still_running"]) {
+    for (const code of [
+      "job_exists",
+      "job_not_found",
+      "job_not_running",
+      "job_still_running",
+      "lock_busy",
+    ]) {
       expect(skill).toContain(code)
     }
   })

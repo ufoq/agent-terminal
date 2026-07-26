@@ -2,7 +2,8 @@
 
 `agent-terminal` gives coding agents a small, project-scoped interface for persistent and
 interactive terminal jobs. Zellij provides the PTY and human-visible panes; agents work only with
-logical job names.
+logical job names. The wrapper adds ownership reconciliation, atomic state, and lifecycle recovery
+so the agent does not have to track Zellij sessions or pane IDs.
 
 The project contains:
 
