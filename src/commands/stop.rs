@@ -93,15 +93,22 @@ impl<Z: Zellij> Controller<Z> {
         operation_deadline: Deadline,
     ) -> Result<Option<crate::zellij::PaneSnapshot>, Error> {
         let deadline = operation_deadline.cap_after(STOP_GRACE);
+        let mut last_running: Option<crate::zellij::PaneSnapshot> = None;
         loop {
-            // Sample with the overall operation deadline so a near-expired grace window does not
-            // force a 0 ms Zellij timeout; the grace deadline below still bounds the wait loop.
-            let pane = self.live_pane(registry, active, operation_deadline)?;
-            if pane.as_ref().is_none_or(|snapshot| snapshot.exited) {
-                return Ok(pane);
+            match self.live_pane(registry, active, deadline) {
+                Ok(pane) => {
+                    if pane.as_ref().is_none_or(|snapshot| snapshot.exited) {
+                        return Ok(pane);
+                    }
+                    last_running = pane;
+                }
+                Err(Error::ZellijFailed { .. }) => {
+                    return Ok(last_running);
+                }
+                Err(error) => return Err(error),
             }
             if deadline.timeout(self.zellij.command_timeout()).is_err() {
-                return Ok(pane);
+                return Ok(last_running);
             }
             thread::sleep(POLL_INTERVAL);
         }

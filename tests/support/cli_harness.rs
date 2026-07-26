@@ -115,6 +115,10 @@ pub fn assert_json_ok(output: &Output) -> Value {
         Some("ok"),
         "JSON response status was not ok; {context}"
     );
+    assert!(
+        value.get("data").is_some_and(Value::is_object),
+        "JSON response data was missing or not an object; {context}"
+    );
     value
 }
 
@@ -145,6 +149,13 @@ pub fn assert_json_error(output: &Output, expected_code: &str, expected_exit: i3
         value.pointer("/error/code").and_then(Value::as_str),
         Some(expected_code),
         "unexpected JSON error code; {context}"
+    );
+    assert!(
+        value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| !message.is_empty()),
+        "JSON error message was missing or empty; {context}"
     );
 }
 
@@ -270,8 +281,8 @@ fn output_context(output: &Output) -> String {
 }
 
 fn must<T, E: Display>(result: Result<T, E>, action: &str) -> T {
-    if let Err(error) = &result {
-        assert!(result.is_ok(), "{action}: {error}");
+    match result {
+        Ok(value) => value,
+        Err(error) => std::panic::resume_unwind(Box::new(format!("{action}: {error}"))),
     }
-    result.unwrap_or_else(|_| std::process::abort())
 }

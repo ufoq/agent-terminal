@@ -30,6 +30,7 @@ fn send_requires_argument_separator() {
 fn invalid_job_name_rejected_for_each_command() {
     let harness = DeterministicHarness::new();
     for args in [
+        &["start", "UPPER", "--", "/bin/true"][..],
         &["read", "UPPER"][..],
         &["send", "UPPER", "--", "text"],
         &["press", "UPPER", "--", "Enter"],
@@ -100,7 +101,7 @@ fn unsupported_key_rejected() {
 fn nonexistent_project_path_fails_typed() {
     let mut harness = DeterministicHarness::new();
     harness.project = harness.root.path().join("missing-project");
-    assert_typed_json_error(&harness.run(&["list"]), 2);
+    assert_json_error(&harness.run(&["list"]), "state_io", 2);
 }
 
 #[test]
@@ -109,7 +110,7 @@ fn project_path_that_is_not_a_directory_fails_typed() -> Result<(), Box<dyn std:
     let file = harness.root.path().join("project-file");
     fs::write(&file, b"not a directory")?;
     harness.project = file;
-    assert_typed_json_error(&harness.run(&["list"]), 2);
+    assert_json_error(&harness.run(&["list"]), "invalid_input", 2);
     Ok(())
 }
 
@@ -117,7 +118,7 @@ fn project_path_that_is_not_a_directory_fails_typed() -> Result<(), Box<dyn std:
 fn nonexistent_cwd_fails_typed() {
     let harness = DeterministicHarness::new();
     let missing = harness.root.path().join("missing-cwd");
-    assert_typed_json_error(
+    assert_json_error(
         &harness.run(&[
             "start",
             "job",
@@ -126,6 +127,7 @@ fn nonexistent_cwd_fails_typed() {
             "--",
             "/bin/true",
         ]),
+        "state_io",
         2,
     );
 }
@@ -177,11 +179,7 @@ fn corrupt_json_state_is_detected() {
 fn corrupt_semantic_state_is_detected() {
     let harness = DeterministicHarness::new();
     write_corrupt_state(&harness, CorruptKind::Semantic);
-    let error = assert_typed_json_error(&harness.run(&["list"]), 2);
-    assert!(matches!(
-        error.pointer("/error/code").and_then(Value::as_str),
-        Some("state_corrupt" | "invalid_state")
-    ));
+    assert_json_error(&harness.run(&["list"]), "state_corrupt", 2);
 }
 
 #[test]
@@ -221,11 +219,7 @@ fn implicit_git_root_is_used_as_project_scope() -> Result<(), Box<dyn std::error
     );
 
     harness.current_dir(&git_root);
-    let error = assert_typed_json_error(&harness.run(&["read", "gitjob"]), 2);
-    assert_ne!(
-        error.pointer("/error/code").and_then(Value::as_str),
-        Some("job_not_found")
-    );
+    assert_json_error(&harness.run(&["read", "gitjob"]), "zellij_not_found", 2);
     Ok(())
 }
 
@@ -233,20 +227,4 @@ fn implicit_git_root_is_used_as_project_scope() -> Result<(), Box<dyn std::error
 fn start_without_command_is_rejected() {
     let harness = DeterministicHarness::new();
     assert_json_error(&harness.run(&["start", "job"]), "invalid_input", 2);
-}
-
-fn assert_typed_json_error(output: &std::process::Output, expected_exit: i32) -> Value {
-    assert_eq!(output.status.code(), Some(expected_exit));
-    let parsed = serde_json::from_slice::<Value>(&output.stdout);
-    assert!(parsed.is_ok(), "stdout was not one JSON value: {output:?}");
-    let value = parsed.unwrap_or(Value::Null);
-    assert!(value.is_object());
-    assert_eq!(value.get("status").and_then(Value::as_str), Some("error"));
-    assert!(
-        value
-            .pointer("/error/code")
-            .and_then(Value::as_str)
-            .is_some()
-    );
-    value
 }
