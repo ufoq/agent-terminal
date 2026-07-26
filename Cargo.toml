@@ -12,6 +12,10 @@ exclude = ["/opencode/node_modules/**", "/opencode/coverage/**", "/target/**"]
 name = "zellij_e2e"
 path = "tests/zellij_e2e/mod.rs"
 
+[[test]]
+name = "recovery_contract"
+path = "tests/recovery_contract/mod.rs"
+
 [dependencies]
 anyhow = "1"
 blake3 = "1"

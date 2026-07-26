@@ -69,7 +69,19 @@ impl<Z: Zellij> Controller<Z> {
         pending: &PendingStart,
         operation_deadline: Deadline,
     ) -> Result<Option<PaneSnapshot>, Error> {
-        let remaining = START_DEADLINE.saturating_sub(elapsed_since(pending.created_millis));
+        let elapsed = elapsed_since(pending.created_millis);
+        if elapsed >= START_DEADLINE {
+            let timeout = operation_deadline.timeout(self.zellij.command_timeout())?;
+            if !self.zellij.session_exists(&registry.session, timeout)? {
+                return Ok(None);
+            }
+            let panes = self.zellij.list_panes(
+                &registry.session,
+                operation_deadline.timeout(self.zellij.command_timeout())?,
+            )?;
+            return Ok(find_pending_pane(panes, pending));
+        }
+        let remaining = START_DEADLINE.saturating_sub(elapsed);
         let deadline = operation_deadline.cap_after(remaining);
         loop {
             let timeout = match deadline.timeout(self.zellij.command_timeout()) {
@@ -84,13 +96,7 @@ impl<Z: Zellij> Controller<Z> {
                     &registry.session,
                     deadline.timeout(self.zellij.command_timeout())?,
                 )?;
-                let found = panes.into_iter().find(|pane| {
-                    !pane.is_plugin
-                        && pane.title == pending.title
-                        && pending
-                            .pane_id
-                            .is_none_or(|pane_id| pane.id == pane_id.get())
-                });
+                let found = find_pending_pane(panes, pending);
                 if found.is_some() {
                     return Ok(found);
                 }
@@ -225,4 +231,14 @@ impl<Z: Zellij> Controller<Z> {
             thread::sleep(POLL_INTERVAL);
         }
     }
+}
+
+fn find_pending_pane(panes: Vec<PaneSnapshot>, pending: &PendingStart) -> Option<PaneSnapshot> {
+    panes.into_iter().find(|pane| {
+        !pane.is_plugin
+            && pane.title == pending.title
+            && pending
+                .pane_id
+                .is_none_or(|pane_id| pane.id == pane_id.get())
+    })
 }
