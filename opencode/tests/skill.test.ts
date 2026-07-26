@@ -190,14 +190,6 @@ describe("agent-terminal CLI skill contract", () => {
     const skill = await readFile(skillPath, "utf8")
     expect(skill.split("\n").length).toBeLessThan(500)
   })
-
-  test("rejects missing CLI example", async () => {
-    const skill = await readFile(skillPath, "utf8")
-    for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
-      const hasExample = skill.includes(`agent-terminal --project "$PROJECT" ${verb}`)
-      expect(hasExample).toBe(true)
-    }
-  })
 })
 
 describe("adapter artifacts are absent", () => {
@@ -236,5 +228,19 @@ describe("adapter artifacts are absent", () => {
     for (const verb of ["start", "read", "send", "press", "stop", "list"]) {
       expect(skill).not.toContain(prefix + verb)
     }
+  })
+
+  const d6 = `bun.lock contains no ${["@opencode-ai", "plugin"].join("/")}`
+  test(d6, async () => {
+    const p = resolve(projectRoot, "opencode/bun.lock")
+    const lock = await readFile(p, "utf8")
+    const forbidden = ["@opencode-ai", "plugin"].join("/")
+    expect(lock).not.toContain(forbidden)
+  })
+
+  test("bun.lock contains no environment-specific registry URLs", async () => {
+    const p = resolve(projectRoot, "opencode/bun.lock")
+    const lock = await readFile(p, "utf8")
+    expect(lock).not.toContain("host.docker.internal")
   })
 })

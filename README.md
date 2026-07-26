@@ -66,19 +66,14 @@ different project roots.
 Bash. There are no adapter wrappers, no plugin package, and no dedicated `terminal_*`
 permissions.
 
-Install the built binary on `PATH`, then copy only the skill directory into OpenCode's config:
+Install the built binary on `PATH`, then copy the skill directory into OpenCode's config:
 
 ```bash
-cp -R opencode/skills ~/.config/opencode/
+mkdir -p ~/.config/opencode/skills
+cp -R opencode/skills/agent-terminal ~/.config/opencode/skills/
 ```
 
-If a previous installation left stale adapter artifacts, remove them and restart:
-
-```bash
-rm -f ~/.config/opencode/tools/terminal.ts
-```
-
-Restart OpenCode after copying or removing skill files.
+Restart OpenCode after copying skill files.
 
 ### Permissions
 

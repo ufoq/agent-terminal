@@ -30,8 +30,9 @@ working directory differs from `$PROJECT`. If the job should run from the projec
 All six verbs accept these global options:
 
 ```text
---project <PATH>       Required. Project identity and state scope.
---state-dir <PATH>     Override state root (default: OS cache dir or $AGENT_TERMINAL_STATE).
+--project <PATH>       Required by this skill. Project identity and state scope.
+                       The CLI defaults to the current directory when omitted.
+--state-dir <PATH>     Override state root (default: OS state dir or $AGENT_TERMINAL_STATE).
 --pretty               Enable pretty-printed JSON output.
 -v, -vv, -vvv          Increase stderr diagnostic verbosity.
 ```
@@ -111,7 +112,7 @@ rejected by the CLI.
 
 ## Interpreting output
 
-Every response is a single compact JSON object on stdout. Diagnostics go to stderr.
+By default every response is a single compact JSON object on stdout; use `--pretty` for formatted output. Diagnostics go to stderr.
 
 ### Envelope
 
