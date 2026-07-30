@@ -48,7 +48,7 @@ describe("npm package contract", () => {
     expect(manifest.types).toBe("dist/index.d.ts")
     expect(manifest["oc-plugin"]).toEqual(["server"])
     expect(manifest.os).toEqual(["linux"])
-    expect(manifest.cpu).toEqual(["x64", "arm64"])
+    expect(manifest.cpu).toEqual(["x64"])
     expect(manifest.files).toEqual(["dist", "skills", "bin", "LICENSE", "README.md"])
     expect(manifest.dependencies ?? {}).toEqual({})
     expect(manifest.peerDependencies ?? {}).toEqual({})
@@ -103,15 +103,11 @@ describe("npm package contract", () => {
     expect(diagnostics.length).toBe(2)
   })
 
-  it("keeps packaged binary artifacts executable", () => {
-    const binDirs = ["linux-x64", "linux-arm64"] as const
-
-    for (const binDir of binDirs) {
-      const binPath = join(packageRoot, "bin", binDir, "agent-terminal")
-      const stat = statSync(binPath)
-      expect(stat.isFile()).toBe(true)
-      expect((stat.mode & 0o111) !== 0).toBe(true)
-      expect(relative(packageRoot, binPath)).toBe(join("bin", binDir, "agent-terminal"))
-    }
+  it("keeps the packaged x86_64 binary artifact executable", () => {
+    const binPath = join(packageRoot, "bin", "linux-x64", "agent-terminal")
+    const stat = statSync(binPath)
+    expect(stat.isFile()).toBe(true)
+    expect((stat.mode & 0o111) !== 0).toBe(true)
+    expect(relative(packageRoot, binPath)).toBe(join("bin", "linux-x64", "agent-terminal"))
   })
 })

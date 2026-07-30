@@ -1,6 +1,6 @@
 # @ufoq/opencode-agent-terminal
 
-OpenCode plugin that bundles the Linux `agent-terminal` binary and its skill.
+OpenCode plugin that bundles the Linux x86_64 `agent-terminal` binary and its skill.
 
 Install by adding an exact version to `opencode.json`:
 

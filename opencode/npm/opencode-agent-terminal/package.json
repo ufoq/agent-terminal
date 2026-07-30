@@ -23,8 +23,7 @@
     "linux"
   ],
   "cpu": [
-    "x64",
-    "arm64"
+    "x64"
   ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -45,7 +44,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist skills bin && cp -R ../../skills skills && export PATH=\"/home/agent/.cargo/bin:$PATH\" && export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/home/agent/.cache/agent-terminal-musl-audit-e769f7b/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc && cargo build --release --target x86_64-unknown-linux-musl && cargo build --release --target aarch64-unknown-linux-musl && mkdir -p bin/linux-x64 bin/linux-arm64 && cp ../../../target/x86_64-unknown-linux-musl/release/agent-terminal bin/linux-x64/agent-terminal && cp ../../../target/aarch64-unknown-linux-musl/release/agent-terminal bin/linux-arm64/agent-terminal && bun build src/index.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "build": "rm -rf dist skills bin && cp -R ../../skills skills && export PATH=\"/home/agent/.cargo/bin:$PATH\" && cargo build --release --target x86_64-unknown-linux-musl && mkdir -p bin/linux-x64 && cp ../../../target/x86_64-unknown-linux-musl/release/agent-terminal bin/linux-x64/agent-terminal && bun build src/index.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "check": "tsc --noEmit && bun run build",
     "prepublishOnly": "bun run check"
   },

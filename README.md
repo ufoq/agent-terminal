@@ -64,7 +64,7 @@ different project roots.
 
 ## OpenCode skill
 
-The published OpenCode package bundles static Linux x64/arm64 `agent-terminal` binaries plus the
+The published OpenCode package bundles a static Linux x86_64 `agent-terminal` binary plus the
 skill. Add the exact package version to `opencode.json`:
 
 ```json

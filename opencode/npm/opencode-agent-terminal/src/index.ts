@@ -32,14 +32,10 @@ export type CreateServerHooksInput = {
 const DEFAULT_PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
 function selectedBinaryDir(packageRoot: string, arch: string): string | null {
-  switch (arch) {
-    case "x64":
-      return join(packageRoot, "bin", "linux-x64")
-    case "arm64":
-      return join(packageRoot, "bin", "linux-arm64")
-    default:
-      return null
+  if (arch === "x64") {
+    return join(packageRoot, "bin", "linux-x64")
   }
+  return null
 }
 
 function isExecutableFile(path: string): boolean {
@@ -69,7 +65,9 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
 
   const binDir = selectedBinaryDir(packageRoot, arch)
   if (binDir === null) {
-    stderr(`[agent-terminal] unsupported architecture: ${arch}. Expected x64 or arm64.`)
+    stderr(
+      `[agent-terminal] unsupported architecture: ${arch}. This package supports x86_64 Linux only.`,
+    )
     return {}
   }
 
