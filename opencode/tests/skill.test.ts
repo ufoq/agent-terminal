@@ -159,7 +159,7 @@ describe("agent-terminal CLI skill contract", () => {
 })
 
 describe("dependency and skill hygiene", () => {
-  test("package.json contains no @opencode-ai/plugin dependency", async () => {
+  test("package.json contains no OpenCode plugin dependency", async () => {
     const p = resolve(projectRoot, "opencode/package.json")
     const pkg = await readFile(p, "utf8")
     const forbidden = ["@opencode-ai", "plugin"].join("/")
@@ -181,7 +181,7 @@ describe("dependency and skill hygiene", () => {
     }
   })
 
-  test("bun.lock contains no @opencode-ai/plugin", async () => {
+  test("bun.lock contains no OpenCode plugin package", async () => {
     const p = resolve(projectRoot, "opencode/bun.lock")
     const lock = await readFile(p, "utf8")
     const forbidden = ["@opencode-ai", "plugin"].join("/")

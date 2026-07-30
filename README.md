@@ -8,13 +8,13 @@ so the agent does not have to track Zellij sessions or pane IDs.
 The project contains:
 
 - a standalone Rust CLI;
-- an OpenCode skill that teaches Bash invocation of the CLI;
+- an OpenCode npm plugin that bundles the CLI and skill;
 - no daemon, HTTP service, persistent output log, or raw Zellij command passthrough.
 
 ## Requirements
 
-- Rust 1.85 or newer;
 - Zellij 0.44.3 or newer;
+- Rust 1.85 or newer for source builds;
 - Bun is required for running the OpenCode skill contract tests and quality gate.
 
 ## Install
@@ -64,8 +64,21 @@ different project roots.
 
 ## OpenCode skill
 
-`opencode/skills/agent-terminal/SKILL.md` teaches the model to invoke the Rust CLI directly through
-Bash.
+The published OpenCode package bundles static Linux x64/arm64 `agent-terminal` binaries plus the
+skill. Add the exact package version to `opencode.json`:
+
+```json
+{
+  "plugin": ["@ufoq/opencode-agent-terminal@0.1.0"]
+}
+```
+
+Restart OpenCode after editing the config. On startup, OpenCode installs the npm package, registers
+the bundled `agent-terminal` skill, and exposes the matching bundled binary on Bash `PATH`. No
+separate binary install or skill copy is required. The host still needs `zellij` on `PATH`.
+
+For local development, `opencode/skills/agent-terminal/SKILL.md` can also teach the model to invoke a
+locally built CLI directly through Bash.
 
 Install the built binary on `PATH`, then copy the skill directory into OpenCode's config:
 

@@ -43,6 +43,12 @@
     }
   },
   "files": {
-    "includes": ["**", "!node_modules", "!coverage"]
+    "includes": [
+      "**",
+      "!node_modules",
+      "!coverage",
+      "!npm/opencode-agent-terminal/dist",
+      "!npm/opencode-agent-terminal/bin"
+    ]
   }
 }
