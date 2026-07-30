@@ -97,12 +97,6 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
   const zellijBin = join(zellijDir, "zellij")
   const bundledZellijMissing = !isExecutableFile(zellijBin)
 
-  if (bundledZellijMissing) {
-    stderr(
-      `[agent-terminal] bundled Zellij is missing; falling back to any zellij available on PATH.`,
-    )
-  }
-
   process.env["PATH"] = computePackagePathEnv(
     packageRoot,
     process.env["PATH"] ?? "",

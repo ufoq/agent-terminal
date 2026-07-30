@@ -14,7 +14,9 @@ The project contains:
 ## Requirements
 
 - Linux x86_64;
-- Zellij 0.44.3 or newer is only required as a fallback when using the npm plugin without its bundled Zellij;
+- Zellij 0.44.3 or newer is required by the source build and by the slim npm plugin
+  (`@ufoq/opencode-agent-terminal`);
+- The bundle variant (`@ufoq/opencode-agent-terminal-bundle-zellij`) includes its own Zellij;
 - Rust 1.85 or newer for source builds;
 - Bun is required for running the OpenCode skill contract tests and quality gate.
 
@@ -25,7 +27,8 @@ cargo install --path .
 agent-terminal --version
 ```
 
-The controller finds `zellij` on `PATH`. When the plugin is used, it prepends a bundled Zellij binary to `PATH` so no host install is needed.
+The controller finds `zellij` on `PATH`. When the bundle plugin is used, it prepends a bundled
+Zellij binary to `PATH` so no host install is needed.
 
 ## CLI
 
@@ -65,19 +68,23 @@ different project roots.
 
 ## OpenCode skill
 
-The published OpenCode package bundles a static Linux x86_64 `agent-terminal` binary, the skill,
-and a pinned Zellij binary. Add the exact package version to `opencode.json`:
+Two npm packages are published:
+
+- `@ufoq/opencode-agent-terminal` — bundles the static Linux x86_64 `agent-terminal` binary and the
+  skill. The host must have Zellij on `PATH`.
+- `@ufoq/opencode-agent-terminal-bundle-zellij` — same as above, plus a pinned Zellij binary so no
+  host install is required.
+
+Add the exact package version you want to `opencode.json`:
 
 ```json
 {
-  "plugin": ["@ufoq/opencode-agent-terminal@0.1.1"]
+  "plugin": ["@ufoq/opencode-agent-terminal-bundle-zellij@0.1.2"]
 }
 ```
 
 Restart OpenCode after editing the config. On startup, OpenCode installs the npm package, registers
-the bundled `agent-terminal` skill, and exposes both the bundled `agent-terminal` and the bundled
-`zellij` binaries on Bash `PATH`. No separate binary install, skill copy, or host Zellij install
-is required.
+the bundled `agent-terminal` skill, and exposes the bundled binaries on Bash `PATH`.
 
 For local development, `opencode/skills/agent-terminal/SKILL.md` can also teach the model to invoke a
 locally built CLI directly through Bash.

@@ -22,5 +22,5 @@
     "noEmit": true,
     "moduleDetection": "force"
   },
-  "include": ["tests/**/*.ts", "npm/opencode-agent-terminal/src/**/*.ts"]
+  "include": ["tests/**/*.ts", "npm/src/**/*.ts"]
 }

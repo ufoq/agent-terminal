@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Build script for the @ufoq/opencode-agent-terminal npm package.
+// Build script for the @ufoq/opencode-agent-terminal npm packages.
 //
-// This script is invoked by `bun run build` and `npm run prepublishOnly`.
-// It does four things:
-//   1. Copy the bundled skill into the package directory.
-//   2. Build a static x86_64 musl agent-terminal binary.
-//   3. Download and verify a pinned Zellij no-web musl binary.
-//   4. Compile the TypeScript plugin entrypoint.
+// This script builds two sibling packages from one shared source:
+//   1. packages/opencode-agent-terminal/ — agent-terminal + skill only
+//   2. packages/opencode-agent-terminal-bundle-zellij/ — agent-terminal + skill + pinned Zellij
+//
+// It runs from the repository root (`../../` relative to this script) so that
+// the Rust binary is built once and then copied into both package outputs.
 
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
@@ -30,17 +30,20 @@ const ZELLIJ_ARCHIVE_SHA256 = "f901129919b0a405ac5f278f53acd7fde5d62401324c509b6
 const ZELLIJ_BINARY_SHA256 = "a675b0106263113b9cb8f028649bad05c5d2283331fa62b2b36dd275aeaaa4d3"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const packageRoot = dirname(__dirname)
-const repoRoot = dirname(dirname(dirname(packageRoot)))
+const npmRoot = dirname(__dirname)
+const repoRoot = dirname(dirname(npmRoot))
+const packagesDir = join(npmRoot, "packages")
+const sharedSrc = join(npmRoot, "src", "index.ts")
+
+const slimPackage = join(packagesDir, "opencode-agent-terminal")
+const bundlePackage = join(packagesDir, "opencode-agent-terminal-bundle-zellij")
 
 const releaseUrl = `https://github.com/zellij-org/zellij/releases/download/v${ZELLIJ_VERSION}/zellij-no-web-x86_64-unknown-linux-musl.tar.gz`
-const zellijBinDir = join(packageRoot, "bin", "zellij")
-const zellijBinPath = join(zellijBinDir, "zellij")
 
 function run(cmd, args, options = {}) {
   const result = spawnSync(cmd, args, {
     stdio: "inherit",
-    cwd: packageRoot,
+    cwd: options.cwd ?? repoRoot,
     ...options,
   })
   if (result.status !== 0) {
@@ -55,7 +58,62 @@ async function sha256File(path) {
   return hash.digest("hex")
 }
 
-async function downloadZellij() {
+function buildAgentTerminal() {
+  const targetBin = join(
+    repoRoot,
+    "target",
+    "x86_64-unknown-linux-musl",
+    "release",
+    "agent-terminal",
+  )
+
+  const cargoPath = process.env["CARGO_HOME"]
+    ? join(process.env["CARGO_HOME"], "bin", "cargo")
+    : "cargo"
+
+  run(cargoPath, ["build", "--release", "--target", "x86_64-unknown-linux-musl"], {
+    cwd: repoRoot,
+    env: { ...process.env, PATH: `/home/agent/.cargo/bin:${process.env["PATH"] ?? ""}` },
+  })
+
+  return targetBin
+}
+
+function copyBinaryToPackage(targetBin, packageRoot) {
+  const destDir = join(packageRoot, "bin", "linux-x64")
+  const destBin = join(destDir, "agent-terminal")
+  mkdirSync(destDir, { recursive: true })
+  cpSync(targetBin, destBin, { force: true })
+  chmodSync(destBin, 0o755)
+}
+
+function copySkillToPackage(packageRoot) {
+  const source = join(repoRoot, "opencode", "skills")
+  const dest = join(packageRoot, "skills")
+  rmSync(dest, { recursive: true, force: true })
+  cpSync(source, dest, { recursive: true })
+}
+
+function compileTypeScript() {
+  const distDir = join(npmRoot, "dist")
+  rmSync(distDir, { recursive: true, force: true })
+  run("bun", ["build", sharedSrc, "--outdir", distDir, "--target", "node", "--format", "esm"], {
+    cwd: npmRoot,
+  })
+  run("tsc", ["--emitDeclarationOnly"], { cwd: npmRoot })
+  return distDir
+}
+
+function copyDistToPackage(distDir, packageRoot) {
+  const destDir = join(packageRoot, "dist")
+  rmSync(destDir, { recursive: true, force: true })
+  cpSync(distDir, destDir, { recursive: true })
+}
+
+async function downloadZellij(packageRoot) {
+  const zellijBinDir = join(packageRoot, "bin", "zellij")
+  const zellijBinPath = join(zellijBinDir, "zellij")
+
   if (existsSync(zellijBinPath) && (statSync(zellijBinPath).mode & 0o111) !== 0) {
     console.log("Using existing bundled Zellij binary.")
     return
@@ -108,60 +166,28 @@ async function downloadZellij() {
   console.log(`Bundled ${version} at ${zellijBinPath}`)
 }
 
-function buildAgentTerminal() {
-  const targetBin = join(
-    repoRoot,
-    "target",
-    "x86_64-unknown-linux-musl",
-    "release",
-    "agent-terminal",
-  )
-  const destBin = join(packageRoot, "bin", "linux-x64", "agent-terminal")
-
-  mkdirSync(join(packageRoot, "bin", "linux-x64"), { recursive: true })
-
-  const cargoPath = process.env["CARGO_HOME"]
-    ? join(process.env["CARGO_HOME"], "bin", "cargo")
-    : "cargo"
-
-  run(cargoPath, ["build", "--release", "--target", "x86_64-unknown-linux-musl"], {
-    cwd: repoRoot,
-    env: { ...process.env, PATH: `/home/agent/.cargo/bin:${process.env["PATH"] ?? ""}` },
-  })
-
-  cpSync(targetBin, destBin, { force: true })
-  chmodSync(destBin, 0o755)
-
-  console.log(`Built agent-terminal at ${destBin}`)
-}
-
-function copySkill() {
-  const source = join(repoRoot, "opencode", "skills")
-  const dest = join(packageRoot, "skills")
-  rmSync(dest, { recursive: true, force: true })
-  cpSync(source, dest, { recursive: true })
-  console.log(`Copied skills from ${source}`)
-}
-
-function cleanBuildOutput() {
+function cleanPackage(packageRoot) {
   rmSync(join(packageRoot, "dist"), { recursive: true, force: true })
   rmSync(join(packageRoot, "skills"), { recursive: true, force: true })
   rmSync(join(packageRoot, "bin"), { recursive: true, force: true })
 }
 
-function compileTypeScript() {
-  run("bun", ["build", "src/index.ts", "--outdir", "dist", "--target", "node", "--format", "esm"])
-  run("tsc", ["--emitDeclarationOnly"])
-  console.log("Compiled TypeScript plugin entrypoint.")
-}
-
 async function main() {
-  cleanBuildOutput()
-  copySkill()
-  buildAgentTerminal()
-  await downloadZellij()
-  compileTypeScript()
-  console.log("Package build complete.")
+  cleanPackage(slimPackage)
+  cleanPackage(bundlePackage)
+
+  const targetBin = buildAgentTerminal()
+  const distDir = compileTypeScript()
+
+  for (const packageRoot of [slimPackage, bundlePackage]) {
+    copyBinaryToPackage(targetBin, packageRoot)
+    copySkillToPackage(packageRoot)
+    copyDistToPackage(distDir, packageRoot)
+  }
+
+  await downloadZellij(bundlePackage)
+
+  console.log("Both packages built.")
 }
 
 main().catch((error) => {

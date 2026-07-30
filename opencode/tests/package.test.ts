@@ -5,11 +5,18 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "bun:test"
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
-const packageRoot = join(repoRoot, "opencode", "npm", "opencode-agent-terminal")
+const npmRoot = join(repoRoot, "opencode", "npm")
+const packagesDir = join(npmRoot, "packages")
+
+const slimPackage = join(packagesDir, "opencode-agent-terminal")
+const bundlePackage = join(packagesDir, "opencode-agent-terminal-bundle-zellij")
+
+const expectedVersion = "0.1.2"
 
 type PackageManifest = {
   readonly name: string
   readonly version: string
+  readonly description: string
   readonly type: string
   readonly main: string
   readonly types: string
@@ -21,6 +28,7 @@ type PackageManifest = {
   readonly peerDependencies?: Record<string, string>
   readonly devDependencies?: Record<string, string>
   readonly "oc-plugin": readonly string[]
+  readonly publishConfig?: { access: string }
 }
 
 type SkillConfig = {
@@ -37,80 +45,137 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T
 }
 
-describe("npm package contract", () => {
-  it("declares the public OpenCode plugin package metadata", async () => {
-    const manifest = await readJson<PackageManifest>(join(packageRoot, "package.json"))
+async function importSharedModule() {
+  return import("../npm/src/index")
+}
 
-    expect(manifest.name).toBe("@ufoq/opencode-agent-terminal")
-    expect(manifest.version).toBe("0.1.1")
-    expect(manifest.type).toBe("module")
-    expect(manifest.main).toBe("dist/index.js")
-    expect(manifest.types).toBe("dist/index.d.ts")
-    expect(manifest["oc-plugin"]).toEqual(["server"])
-    expect(manifest.os).toEqual(["linux"])
-    expect(manifest.cpu).toEqual(["x64"])
-    expect(manifest.files).toEqual([
+describe("npm package contract", () => {
+  it("builds both package manifests with the same version", async () => {
+    const slim = await readJson<PackageManifest>(join(slimPackage, "package.json"))
+    const bundle = await readJson<PackageManifest>(join(bundlePackage, "package.json"))
+
+    expect(slim.name).toBe("@ufoq/opencode-agent-terminal")
+    expect(bundle.name).toBe("@ufoq/opencode-agent-terminal-bundle-zellij")
+    expect(slim.version).toBe(expectedVersion)
+    expect(bundle.version).toBe(expectedVersion)
+    expect(slim.version).toBe(bundle.version)
+
+    for (const manifest of [slim, bundle]) {
+      expect(manifest.type).toBe("module")
+      expect(manifest.main).toBe("dist/index.js")
+      expect(manifest.types).toBe("dist/index.d.ts")
+      expect(manifest["oc-plugin"]).toEqual(["server"])
+      expect(manifest.os).toEqual(["linux"])
+      expect(manifest.cpu).toEqual(["x64"])
+      expect(manifest.dependencies ?? {}).toEqual({})
+      expect(manifest.peerDependencies ?? {}).toEqual({})
+      expect(Object.keys(manifest.scripts ?? {})).not.toContain("postinstall")
+      expect(manifest.publishConfig).toEqual({ access: "public" })
+    }
+  })
+
+  it("keeps Zellij out of the slim package files list", async () => {
+    const slim = await readJson<PackageManifest>(join(slimPackage, "package.json"))
+    expect(slim.files).toEqual(["dist", "skills", "bin/linux-x64", "LICENSE", "README.md"])
+  })
+
+  it("includes bundled Zellij in the bundle package files list", async () => {
+    const bundle = await readJson<PackageManifest>(join(bundlePackage, "package.json"))
+    expect(bundle.files).toEqual([
       "dist",
       "skills",
-      "bin",
+      "bin/linux-x64",
+      "bin/zellij",
       "LICENSE",
       "README.md",
       "THIRD_PARTY.md",
     ])
-    expect(manifest.dependencies ?? {}).toEqual({})
-    expect(manifest.peerDependencies ?? {}).toEqual({})
-    expect(Object.keys(manifest.scripts ?? {})).not.toContain("postinstall")
   })
 
-  it("bundles the agent-terminal skill at the path registered by the plugin", () => {
-    const skillPath = join(packageRoot, "skills", "agent-terminal", "SKILL.md")
-    expect(existsSync(skillPath)).toBe(true)
-  })
-
-  it("registers the bundled skills path and selected binary path", async () => {
-    const module = await import("../npm/opencode-agent-terminal/src/index")
+  it("exports the V1 plugin object from the shared source", async () => {
+    const module = await importSharedModule()
     expect(module.default).toEqual({ id: "opencode-agent-terminal", server: module.server })
+  })
+
+  it("registers the bundled skills path and agent-terminal binary for the slim package", async () => {
+    const module = await importSharedModule()
     const hooks = await module.createServerHooks({
       arch: "x64",
       platform: "linux",
-      packageRoot,
+      packageRoot: slimPackage,
       stderr: () => undefined,
     })
 
     const config: SkillConfig = {}
     hooks.config?.(config)
-
-    expect(config.skills?.paths).toEqual([join(packageRoot, "skills")])
+    expect(config.skills?.paths).toEqual([join(slimPackage, "skills")])
 
     const output: ShellEnvOutput = { env: { PATH: "/usr/bin" } }
     hooks["shell.env"]?.({}, output)
-
-    expect(output.env["PATH"]?.split(":")[0]).toBe(join(packageRoot, "bin", "zellij"))
-    expect(output.env["PATH"]?.split(":")[1]).toBe(join(packageRoot, "bin", "linux-x64"))
+    expect(output.env["PATH"]?.split(":")[0]).toBe(join(slimPackage, "bin", "linux-x64"))
   })
 
-  it("bundles a pinned x86_64 zellij binary that is executable", () => {
-    const zellijPath = join(packageRoot, "bin", "zellij", "zellij")
-    const stat = statSync(zellijPath)
+  it("registers the bundled skills path and puts bundled Zellij first for the bundle package", async () => {
+    const module = await importSharedModule()
+    const hooks = await module.createServerHooks({
+      arch: "x64",
+      platform: "linux",
+      packageRoot: bundlePackage,
+      stderr: () => undefined,
+    })
+
+    const config: SkillConfig = {}
+    hooks.config?.(config)
+    expect(config.skills?.paths).toEqual([join(bundlePackage, "skills")])
+
+    const output: ShellEnvOutput = { env: { PATH: "/usr/bin" } }
+    hooks["shell.env"]?.({}, output)
+    expect(output.env["PATH"]?.split(":")[0]).toBe(join(bundlePackage, "bin", "zellij"))
+    expect(output.env["PATH"]?.split(":")[1]).toBe(join(bundlePackage, "bin", "linux-x64"))
+  })
+
+  it("keeps the agent-terminal binary executable in both packages", () => {
+    for (const packageRoot of [slimPackage, bundlePackage]) {
+      const binPath = join(packageRoot, "bin", "linux-x64", "agent-terminal")
+      const stat = statSync(binPath)
+      expect(stat.isFile()).toBe(true)
+      expect((stat.mode & 0o111) !== 0).toBe(true)
+      expect(relative(packageRoot, binPath)).toBe(join("bin", "linux-x64", "agent-terminal"))
+    }
+  })
+
+  it("bundles the skill in both packages", () => {
+    for (const packageRoot of [slimPackage, bundlePackage]) {
+      const skillPath = join(packageRoot, "skills", "agent-terminal", "SKILL.md")
+      expect(existsSync(skillPath)).toBe(true)
+    }
+  })
+
+  it("bundles a pinned x86_64 Zellij binary only in the bundle package", () => {
+    const bundleZellij = join(bundlePackage, "bin", "zellij", "zellij")
+    const stat = statSync(bundleZellij)
     expect(stat.isFile()).toBe(true)
     expect((stat.mode & 0o111) !== 0).toBe(true)
-    expect(relative(packageRoot, zellijPath)).toBe(join("bin", "zellij", "zellij"))
+    expect(relative(bundlePackage, bundleZellij)).toBe(join("bin", "zellij", "zellij"))
+
+    const slimZellij = join(slimPackage, "bin", "zellij", "zellij")
+    expect(existsSync(slimZellij)).toBe(false)
   })
 
-  it("withholds hooks when the selected binary is missing or unsupported", async () => {
-    const module = await import("../npm/opencode-agent-terminal/src/index")
+  it("withholds hooks when the agent-terminal binary is missing or unsupported", async () => {
+    const module = await importSharedModule()
     const diagnostics: string[] = []
 
     const missingHooks = await module.createServerHooks({
       arch: "x64",
       platform: "linux",
-      packageRoot: join(packageRoot, "missing-root"),
+      packageRoot: join(slimPackage, "missing-root"),
       stderr: (message: string) => diagnostics.push(message),
     })
     const unsupportedHooks = await module.createServerHooks({
       arch: "riscv64",
       platform: "linux",
-      packageRoot,
+      packageRoot: slimPackage,
       stderr: (message: string) => diagnostics.push(message),
     })
 
@@ -119,39 +184,17 @@ describe("npm package contract", () => {
     expect(diagnostics.length).toBe(2)
   })
 
-  it("keeps the packaged x86_64 binary artifact executable", () => {
-    const binPath = join(packageRoot, "bin", "linux-x64", "agent-terminal")
-    const stat = statSync(binPath)
-    expect(stat.isFile()).toBe(true)
-    expect((stat.mode & 0o111) !== 0).toBe(true)
-    expect(relative(packageRoot, binPath)).toBe(join("bin", "linux-x64", "agent-terminal"))
-  })
+  it("exposes hooks for the slim package even though Zellij is absent", async () => {
+    const module = await importSharedModule()
+    const hooks = await module.createServerHooks({
+      arch: "x64",
+      platform: "linux",
+      packageRoot: slimPackage,
+      stderr: (message: string) => {
+        throw new Error(`Unexpected diagnostic: ${message}`)
+      },
+    })
 
-  it("warns but still exposes hooks when the bundled Zellij is missing", async () => {
-    const module = await import("../npm/opencode-agent-terminal/src/index")
-    const { mkdtempSync, mkdirSync } = await import("node:fs")
-    const { cpSync, rmSync } = await import("node:fs")
-    const { tmpdir } = await import("node:os")
-
-    const diagnostics: string[] = []
-    const fakeRoot = mkdtempSync(join(tmpdir(), "agent-terminal-test-"))
-    const binDir = join(fakeRoot, "bin", "linux-x64")
-    mkdirSync(binDir, { recursive: true })
-    cpSync(join(packageRoot, "bin", "linux-x64", "agent-terminal"), join(binDir, "agent-terminal"))
-
-    try {
-      const hooks = await module.createServerHooks({
-        arch: "x64",
-        platform: "linux",
-        packageRoot: fakeRoot,
-        stderr: (message: string) => diagnostics.push(message),
-      })
-
-      expect(Object.keys(hooks)).toEqual(["config", "shell.env"])
-      expect(diagnostics.length).toBe(1)
-      expect(diagnostics[0]).toContain("falling back")
-    } finally {
-      rmSync(fakeRoot, { recursive: true, force: true })
-    }
+    expect(Object.keys(hooks)).toEqual(["config", "shell.env"])
   })
 })

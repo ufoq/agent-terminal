@@ -47,8 +47,9 @@
       "**",
       "!node_modules",
       "!coverage",
-      "!npm/opencode-agent-terminal/dist",
-      "!npm/opencode-agent-terminal/bin"
+      "!npm/dist",
+      "!npm/packages/*/dist",
+      "!npm/packages/*/bin"
     ]
   }
 }

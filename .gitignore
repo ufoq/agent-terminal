@@ -2,9 +2,10 @@
 /opencode/node_modules/
 /opencode/.tsbuildinfo
 /opencode/coverage/
-/opencode/npm/opencode-agent-terminal/dist/
-/opencode/npm/opencode-agent-terminal/bin/
-/opencode/npm/opencode-agent-terminal/skills/
+/opencode/npm/dist/
+/opencode/npm/packages/*/dist/
+/opencode/npm/packages/*/bin/
+/opencode/npm/packages/*/skills/
 /.omo/
 /.*
 !.github/
