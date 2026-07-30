@@ -42,14 +42,21 @@ describe("npm package contract", () => {
     const manifest = await readJson<PackageManifest>(join(packageRoot, "package.json"))
 
     expect(manifest.name).toBe("@ufoq/opencode-agent-terminal")
-    expect(manifest.version).toBe("0.1.0")
+    expect(manifest.version).toBe("0.1.1")
     expect(manifest.type).toBe("module")
     expect(manifest.main).toBe("dist/index.js")
     expect(manifest.types).toBe("dist/index.d.ts")
     expect(manifest["oc-plugin"]).toEqual(["server"])
     expect(manifest.os).toEqual(["linux"])
     expect(manifest.cpu).toEqual(["x64"])
-    expect(manifest.files).toEqual(["dist", "skills", "bin", "LICENSE", "README.md"])
+    expect(manifest.files).toEqual([
+      "dist",
+      "skills",
+      "bin",
+      "LICENSE",
+      "README.md",
+      "THIRD_PARTY.md",
+    ])
     expect(manifest.dependencies ?? {}).toEqual({})
     expect(manifest.peerDependencies ?? {}).toEqual({})
     expect(Object.keys(manifest.scripts ?? {})).not.toContain("postinstall")
@@ -78,7 +85,16 @@ describe("npm package contract", () => {
     const output: ShellEnvOutput = { env: { PATH: "/usr/bin" } }
     hooks["shell.env"]?.({}, output)
 
-    expect(output.env["PATH"]?.split(":")[0]).toBe(join(packageRoot, "bin", "linux-x64"))
+    expect(output.env["PATH"]?.split(":")[0]).toBe(join(packageRoot, "bin", "zellij"))
+    expect(output.env["PATH"]?.split(":")[1]).toBe(join(packageRoot, "bin", "linux-x64"))
+  })
+
+  it("bundles a pinned x86_64 zellij binary that is executable", () => {
+    const zellijPath = join(packageRoot, "bin", "zellij", "zellij")
+    const stat = statSync(zellijPath)
+    expect(stat.isFile()).toBe(true)
+    expect((stat.mode & 0o111) !== 0).toBe(true)
+    expect(relative(packageRoot, zellijPath)).toBe(join("bin", "zellij", "zellij"))
   })
 
   it("withholds hooks when the selected binary is missing or unsupported", async () => {
@@ -109,5 +125,33 @@ describe("npm package contract", () => {
     expect(stat.isFile()).toBe(true)
     expect((stat.mode & 0o111) !== 0).toBe(true)
     expect(relative(packageRoot, binPath)).toBe(join("bin", "linux-x64", "agent-terminal"))
+  })
+
+  it("warns but still exposes hooks when the bundled Zellij is missing", async () => {
+    const module = await import("../npm/opencode-agent-terminal/src/index")
+    const { mkdtempSync, mkdirSync } = await import("node:fs")
+    const { cpSync, rmSync } = await import("node:fs")
+    const { tmpdir } = await import("node:os")
+
+    const diagnostics: string[] = []
+    const fakeRoot = mkdtempSync(join(tmpdir(), "agent-terminal-test-"))
+    const binDir = join(fakeRoot, "bin", "linux-x64")
+    mkdirSync(binDir, { recursive: true })
+    cpSync(join(packageRoot, "bin", "linux-x64", "agent-terminal"), join(binDir, "agent-terminal"))
+
+    try {
+      const hooks = await module.createServerHooks({
+        arch: "x64",
+        platform: "linux",
+        packageRoot: fakeRoot,
+        stderr: (message: string) => diagnostics.push(message),
+      })
+
+      expect(Object.keys(hooks)).toEqual(["config", "shell.env"])
+      expect(diagnostics.length).toBe(1)
+      expect(diagnostics[0]).toContain("falling back")
+    } finally {
+      rmSync(fakeRoot, { recursive: true, force: true })
+    }
   })
 })

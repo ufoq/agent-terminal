@@ -31,11 +31,15 @@ export type CreateServerHooksInput = {
 
 const DEFAULT_PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-function selectedBinaryDir(packageRoot: string, arch: string): string | null {
+function selectedAgentTerminalDir(packageRoot: string, arch: string): string | null {
   if (arch === "x64") {
     return join(packageRoot, "bin", "linux-x64")
   }
   return null
+}
+
+function bundledZellijDir(packageRoot: string): string {
+  return join(packageRoot, "bin", "zellij")
 }
 
 function isExecutableFile(path: string): boolean {
@@ -52,6 +56,18 @@ function prependPathEntry(entry: string, path: string): string {
   return [entry, ...entries].join(":")
 }
 
+function computePackagePathEnv(
+  packageRoot: string,
+  basePath: string,
+  bundledZellijMissing: boolean,
+): string {
+  const agentTerminalDir = join(packageRoot, "bin", "linux-x64")
+  const zellijDir = bundledZellijDir(packageRoot)
+
+  const path = prependPathEntry(agentTerminalDir, basePath)
+  return bundledZellijMissing ? path : prependPathEntry(zellijDir, path)
+}
+
 export async function createServerHooks(input: CreateServerHooksInput = {}): Promise<Hooks> {
   const platform = input.platform ?? process.platform
   const arch = input.arch ?? process.arch
@@ -63,19 +79,35 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
     return {}
   }
 
-  const binDir = selectedBinaryDir(packageRoot, arch)
-  if (binDir === null) {
+  const agentTerminalDir = selectedAgentTerminalDir(packageRoot, arch)
+  if (agentTerminalDir === null) {
     stderr(
       `[agent-terminal] unsupported architecture: ${arch}. This package supports x86_64 Linux only.`,
     )
     return {}
   }
 
-  const executable = join(binDir, "agent-terminal")
-  if (!isExecutableFile(executable)) {
-    stderr(`[agent-terminal] bundled executable is missing or not executable: ${executable}`)
+  const agentTerminalBin = join(agentTerminalDir, "agent-terminal")
+  if (!isExecutableFile(agentTerminalBin)) {
+    stderr(`[agent-terminal] bundled executable is missing or not executable: ${agentTerminalBin}`)
     return {}
   }
+
+  const zellijDir = bundledZellijDir(packageRoot)
+  const zellijBin = join(zellijDir, "zellij")
+  const bundledZellijMissing = !isExecutableFile(zellijBin)
+
+  if (bundledZellijMissing) {
+    stderr(
+      `[agent-terminal] bundled Zellij is missing; falling back to any zellij available on PATH.`,
+    )
+  }
+
+  process.env["PATH"] = computePackagePathEnv(
+    packageRoot,
+    process.env["PATH"] ?? "",
+    bundledZellijMissing,
+  )
 
   const skillsPath = join(packageRoot, "skills")
 
@@ -90,7 +122,11 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
       config.skills = { ...skills, paths: [...paths, skillsPath] }
     },
     "shell.env": (_input, output) => {
-      output.env["PATH"] = prependPathEntry(binDir, output.env["PATH"] ?? process.env["PATH"] ?? "")
+      output.env["PATH"] = computePackagePathEnv(
+        packageRoot,
+        output.env["PATH"] ?? process.env["PATH"] ?? "",
+        bundledZellijMissing,
+      )
     },
   }
 }

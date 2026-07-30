@@ -1,7 +1,7 @@
 {
   "name": "@ufoq/opencode-agent-terminal",
-  "version": "0.1.0",
-  "description": "OpenCode plugin that bundles the agent-terminal CLI and skill",
+  "version": "0.1.1",
+  "description": "OpenCode plugin that bundles the agent-terminal CLI, skill, and a pinned Zellij binary",
   "type": "module",
   "license": "MIT",
   "author": "ufoq",
@@ -41,10 +41,11 @@
     "skills",
     "bin",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY.md"
   ],
   "scripts": {
-    "build": "rm -rf dist skills bin && cp -R ../../skills skills && export PATH=\"/home/agent/.cargo/bin:$PATH\" && cargo build --release --target x86_64-unknown-linux-musl && mkdir -p bin/linux-x64 && cp ../../../target/x86_64-unknown-linux-musl/release/agent-terminal bin/linux-x64/agent-terminal && bun build src/index.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "build": "node scripts/build.mjs",
     "check": "tsc --noEmit && bun run build",
     "prepublishOnly": "bun run check"
   },

@@ -13,7 +13,8 @@ The project contains:
 
 ## Requirements
 
-- Zellij 0.44.3 or newer;
+- Linux x86_64;
+- Zellij 0.44.3 or newer is only required as a fallback when using the npm plugin without its bundled Zellij;
 - Rust 1.85 or newer for source builds;
 - Bun is required for running the OpenCode skill contract tests and quality gate.
 
@@ -24,7 +25,7 @@ cargo install --path .
 agent-terminal --version
 ```
 
-The controller must be able to find `zellij` on `PATH`.
+The controller finds `zellij` on `PATH`. When the plugin is used, it prepends a bundled Zellij binary to `PATH` so no host install is needed.
 
 ## CLI
 
@@ -64,18 +65,19 @@ different project roots.
 
 ## OpenCode skill
 
-The published OpenCode package bundles a static Linux x86_64 `agent-terminal` binary plus the
-skill. Add the exact package version to `opencode.json`:
+The published OpenCode package bundles a static Linux x86_64 `agent-terminal` binary, the skill,
+and a pinned Zellij binary. Add the exact package version to `opencode.json`:
 
 ```json
 {
-  "plugin": ["@ufoq/opencode-agent-terminal@0.1.0"]
+  "plugin": ["@ufoq/opencode-agent-terminal@0.1.1"]
 }
 ```
 
 Restart OpenCode after editing the config. On startup, OpenCode installs the npm package, registers
-the bundled `agent-terminal` skill, and exposes the matching bundled binary on Bash `PATH`. No
-separate binary install or skill copy is required. The host still needs `zellij` on `PATH`.
+the bundled `agent-terminal` skill, and exposes both the bundled `agent-terminal` and the bundled
+`zellij` binaries on Bash `PATH`. No separate binary install, skill copy, or host Zellij install
+is required.
 
 For local development, `opencode/skills/agent-terminal/SKILL.md` can also teach the model to invoke a
 locally built CLI directly through Bash.
