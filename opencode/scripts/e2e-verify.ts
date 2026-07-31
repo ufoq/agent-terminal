@@ -26,6 +26,8 @@ export type StepEvent = {
 
 type Result = { ok: true } | { ok: false; error: string }
 
+export type VerifyMode = "strict" | "real"
+
 export function parseTranscript(path: string): StepEvent[] {
   const text = readFileSyncUtf8(path)
   const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "")
@@ -92,7 +94,7 @@ function expectOkJson(
   return check(obj.data as Record<string, unknown>)
 }
 
-export function verifyE2E(path: string, jobName: string): Result {
+export function verifyE2E(path: string, jobName: string, mode: VerifyMode = "strict"): Result {
   const events = parseTranscript(path)
 
   // Reject top-level error events (e.g., a tool execution failure surfaced as an error).
@@ -110,7 +112,18 @@ export function verifyE2E(path: string, jobName: string): Result {
     const ev = events[i]
     if (ev.type !== "tool_use") continue
     const part = ev.part
-    if (!isToolPart(part)) continue
+    if (!isToolPart(part)) {
+      // In strict mode any non-Bash tool call fails the Bash-only contract.
+      // In real mode a model may legitimately use other tools; those are
+      // non-evidence and do not contribute to the lifecycle milestones.
+      if (mode === "strict") {
+        return {
+          ok: false,
+          error: `non-Bash tool call used in strict mode: ${JSON.stringify(part).slice(0, 200)}`,
+        }
+      }
+      continue
+    }
     // Reject any Bash tool call that is not a completed, successful invocation.
     if (part.state?.status !== "completed") {
       return {
@@ -124,7 +137,16 @@ export function verifyE2E(path: string, jobName: string): Result {
     const callID = part.callID
     if (!callID) continue
     const command = extractAgentTerminalCommand(part.state?.input?.command)
-    if (!command) continue
+    if (!command) {
+      // Same policy as non-Bash tools: strict rejects, real treats as non-evidence.
+      if (mode === "strict") {
+        return {
+          ok: false,
+          error: `Bash tool call is not an agent-terminal command in strict mode: ${part.state?.input?.command ?? ""}`,
+        }
+      }
+      continue
+    }
     toolEvents.push({ index: i, callID, command, output: part.state.output ?? "" })
   }
 
@@ -273,9 +295,16 @@ export function verifyE2E(path: string, jobName: string): Result {
   ]
 
   const attempts: number[] = new Array(milestones.length).fill(0)
+  const maxAttempts = mode === "real" ? 8 : 3
+  const isObservational = (cmd: string) => /\blist\b|\bread\b/.test(cmd)
 
   for (const ev of toolEvents) {
     if (step >= milestones.length) {
+      if (mode === "real" && isObservational(ev.command)) {
+        // A real model may re-check state after the lifecycle completed; that is
+        // non-evidence and does not invalidate the completed milestones.
+        continue
+      }
       return {
         ok: false,
         error: `lifecycle complete but an extra agent-terminal Bash call followed: ${ev.command}`,
@@ -283,6 +312,10 @@ export function verifyE2E(path: string, jobName: string): Result {
     }
     const milestone = milestones[step]
     if (!milestone.match(ev.command)) {
+      if (mode === "real" && isObservational(ev.command)) {
+        // Real models legitimately poll with list/read between lifecycle steps.
+        continue
+      }
       return {
         ok: false,
         error: `out-of-order or extraneous agent-terminal Bash call at milestone ${step + 1}: ${ev.command}`,
@@ -291,10 +324,10 @@ export function verifyE2E(path: string, jobName: string): Result {
     attempts[step]++
     const result = milestone.check(ev.output)
     if (!result.ok) {
-      if (attempts[step] > 3) {
+      if (attempts[step] >= maxAttempts) {
         return {
           ok: false,
-          error: `milestone "${milestone.name}" failed after 3 attempts: ${result.error}`,
+          error: `milestone "${milestone.name}" failed after ${maxAttempts} attempts: ${result.error}`,
         }
       }
       continue
@@ -325,17 +358,23 @@ export function verifyE2E(path: string, jobName: string): Result {
     return { ok: false, error: "no standalone E2E_SUCCESS line found in final assistant text" }
   }
 
-  for (const ev of events) {
-    if (ev.type === "text" && isTextPart(ev.part) && ev.part.text) {
-      const text = ev.part.text
-      const fenceMatch = text.match(/```[a-z]*\n([\s\S]*?)```/g)
-      if (fenceMatch) {
-        for (const block of fenceMatch) {
-          if (/^\s*agent-terminal\b/m.test(block)) {
-            return {
-              ok: false,
-              error:
-                "model emitted agent-terminal commands inside a Markdown code block instead of using tool calls",
+  // Strict mode rejects Markdown code blocks that re-print agent-terminal commands,
+  // because the fixture model must drive the lifecycle exclusively through tool
+  // calls. Real models commonly summarize their actions in a final code block
+  // AFTER executing them, so this check does not apply in real mode.
+  if (mode === "strict") {
+    for (const ev of events) {
+      if (ev.type === "text" && isTextPart(ev.part) && ev.part.text) {
+        const text = ev.part.text
+        const fenceMatch = text.match(/```[a-z]*\n([\s\S]*?)```/g)
+        if (fenceMatch) {
+          for (const block of fenceMatch) {
+            if (/^\s*agent-terminal\b/m.test(block)) {
+              return {
+                ok: false,
+                error:
+                  "model emitted agent-terminal commands inside a Markdown code block instead of using tool calls",
+              }
             }
           }
         }
@@ -347,12 +386,25 @@ export function verifyE2E(path: string, jobName: string): Result {
 }
 
 function main(): void {
-  const [, , path, jobName] = process.argv
+  const args = process.argv.slice(2)
+  let path = ""
+  let jobName = ""
+  let mode: VerifyMode = "strict"
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--mode" && i + 1 < args.length) {
+      const v = args[i + 1]
+      mode = v === "real" ? "real" : "strict"
+      i++
+      continue
+    }
+    if (!path) path = args[i]
+    else if (!jobName) jobName = args[i]
+  }
   if (!path || !jobName) {
-    console.error("usage: bun run e2e-verify.ts <transcript.jsonl> <job-name>")
+    console.error("usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real]")
     process.exit(2)
   }
-  const result = verifyE2E(path, jobName)
+  const result = verifyE2E(path, jobName, mode)
   if (!result.ok) {
     console.error(`e2e verification failed: ${result.error}`)
     process.exit(1)

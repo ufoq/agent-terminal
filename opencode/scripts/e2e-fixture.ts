@@ -35,7 +35,7 @@ type HistoryMessage = {
 
 const STEPS = [
   {
-    cmd: (job: string) => `agent-terminal list`,
+    cmd: (_job: string) => `agent-terminal list`,
     onResult: "list",
     check: (data: Record<string, unknown>): StepCheck => {
       if (!Array.isArray(data.jobs))
@@ -208,7 +208,7 @@ const STEPS = [
     },
   },
   {
-    cmd: (job: string) => `agent-terminal list`,
+    cmd: (_job: string) => `agent-terminal list`,
     onResult: "list-final",
     check: (data: Record<string, unknown>): StepCheck => {
       if (!Array.isArray(data.jobs))

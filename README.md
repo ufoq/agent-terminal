@@ -149,7 +149,7 @@ end-to-end via `opencode run`.
 The fixture replaces the LLM in the loop: instead of a model that must *decide* to call the
 Bash tool, the fixture emits the exact next `bash` tool call, validates each step's real
 agent-terminal JSON output, and advances through the lifecycle. This makes the gate fast
-(seconds, not minutes), deterministic (no model flakiness, no downloads), and still proves the
+(seconds, not minutes), deterministic (no model flakiness, no model downloads), and still proves the
 full integration: real OpenCode, real plugin hooks, real Bash execution, and the real
 agent-terminal binary against a live Zellij server.
 
@@ -207,8 +207,9 @@ Environment variables:
   binaries) so the plugin's `shell.env` hook is the only binary source.
 - `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
 
-Artifacts are retained under `/tmp/agent-terminal-e2e-fixture-<pid>/` unless
-`AGENT_TERMINAL_CLEANUP=1` is set.
+By default the fixture wrapper removes temporary directories. Set
+`AGENT_TERMINAL_CLEANUP=0` to retain the wrapper worktree and the harness evidence directory
+under `/tmp/agent-terminal-e2e-fixture-<pid>-evidence/`.
 
 This is configuration isolation, not a security sandbox: the fixture still drives real Bash
 execution as the invoking user. Run it only on throwaway machines or isolated CI runners.
@@ -217,6 +218,56 @@ For GitHub Actions, the full gate fits comfortably in the 10-minute budget on a 
 Linux runner (warm-cache `bun run release:check` completes in roughly a minute); the Rust
 quality gate (`cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test
 --all-targets`) dominates the runtime and can be run in parallel with the OpenCode gate.
+
+### Optional real-model e2e
+
+`scripts/e2e-opencode-real.sh` is an **optional, local-only** companion test that runs the same
+9-step lifecycle with a **real model** from your own OpenCode configuration. It exists to prove
+that an actual model (not the deterministic fixture) can discover the packaged skill and
+operate the terminal end-to-end. It is not part of `release:check` and is intentionally slow
+and non-deterministic — use it when you want to validate a model or a config change manually.
+
+It is **refused automatically under CI** (when the `CI` environment variable is set) unless you
+explicitly opt in with `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI=1`, because a real-model test has no
+place in a deterministic release gate.
+
+```bash
+cd opencode
+AGENT_TERMINAL_OPENCODE_CONFIG=~/.config/opencode/opencode.json \
+  OPENCODE_MODEL=litellm/ollama-cloud/deepseek-v4-flash \
+  bun run e2e:opencode:real
+```
+
+What it does:
+
+1. Parses your real `opencode.json` (JSONC-tolerant) and **projects only the selected
+   provider's block** into a scoped sandbox config — together with the packed bundle plugin
+   and safe permissions. Your other providers, plugins, MCP servers, agents, and instructions
+   are never copied, so nothing from your personal config leaks into the test run.
+2. Copies **only the selected provider's entry** from `auth.json` into the sandbox
+   (default `~/.local/share/opencode/auth.json`, overridable via `AGENT_TERMINAL_OPENCODE_AUTH`),
+   and passes through only an explicit env-var allowlist
+   (`AGENT_TERMINAL_PROVIDER_ENV_VARS`, comma-separated) — never the whole host environment.
+3. Runs the shared lifecycle harness in `real` verify mode: the same 9 ordered JSON
+   postconditions and `E2E_SUCCESS`, but tolerant of up to 8 observational `read`/`list`
+   retries and unrelated tools, while still rejecting failed calls, out-of-order or duplicate
+   mutating operations, incomplete cleanup, and top-level errors.
+4. Always scrubs the projected config and auth data on exit — even on failure — retaining
+   only the evidence directory.
+
+Environment variables:
+
+- `AGENT_TERMINAL_OPENCODE_CONFIG` — path to your real `opencode.json`/`opencode.jsonc`
+  (required).
+- `OPENCODE_MODEL` — `provider/model` alias that exists in that config (required).
+- `AGENT_TERMINAL_OPENCODE_AUTH` — path to `auth.json` to project credentials from (default:
+  OpenCode's standard location).
+- `AGENT_TERMINAL_PROVIDER_ENV_VARS` — comma-separated allowlist of env vars passed through to
+  the sandbox (e.g. `OPENAI_API_KEY,ANTHROPIC_API_KEY`).
+- `AGENT_TERMINAL_PROMPT_E2E_TIMEOUT` — model run timeout in seconds (default `900`).
+- `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI` — set to `1` to permit execution under CI.
+- `AGENT_TERMINAL_CLEANUP` — set to `1` to remove the real-model wrapper worktree (default `0`,
+  while projected config/auth data are always scrubbed).
 
 ## Development
 

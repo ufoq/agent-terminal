@@ -26,6 +26,9 @@ OPENCODE_MODEL="${OPENCODE_MODEL:-}"
 OPENCODE_RUN_FLAGS="${OPENCODE_RUN_FLAGS:-}"
 AGENT_TERMINAL_CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 AGENT_TERMINAL_OPENCODE_CONFIG="${AGENT_TERMINAL_OPENCODE_CONFIG:-}"
+AGENT_TERMINAL_OPENCODE_AUTH="${AGENT_TERMINAL_OPENCODE_AUTH:-}"
+AGENT_TERMINAL_VERIFY_MODE="${AGENT_TERMINAL_VERIFY_MODE:-strict}"
+AGENT_TERMINAL_DISABLE_MODELS_FETCH="${AGENT_TERMINAL_DISABLE_MODELS_FETCH:-1}"
 AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
 AGENT_TERMINAL_HOST_PATH="${AGENT_TERMINAL_HOST_PATH:-$HOST_PATH}"
 
@@ -64,15 +67,17 @@ cleanup() {
   fi
 
   if [[ $AGENT_TERMINAL_CLEANUP != 1 && -d $ARTIFACT_DIR ]]; then
-    rm -rf "$WORKDIR/artifacts"
-    cp -a "$ARTIFACT_DIR" "$WORKDIR/artifacts"
+    EVIDENCE_DIR="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID-evidence"
+    rm -rf "$EVIDENCE_DIR"
+    install -d -m 0700 "$EVIDENCE_DIR"
+    cp -a "$ARTIFACT_DIR/." "$EVIDENCE_DIR/"
   fi
 
-  if [[ $AGENT_TERMINAL_CLEANUP == 1 ]]; then
-    rm -rf "$SANDBOX" "$SHORT_BASE"
-  else
-    printf 'Evidence retained at %s\n' "$SANDBOX"
-    rm -rf "$SHORT_BASE"
+  # Config, auth, cache and state may contain projected provider credentials and
+  # are NEVER retained; only the artifact directory is kept as evidence.
+  rm -rf "$SANDBOX" "$SHORT_BASE"
+  if [[ -n ${EVIDENCE_DIR:-} && -d $EVIDENCE_DIR ]]; then
+    printf 'Evidence retained at %s\n' "$EVIDENCE_DIR"
   fi
 
   exit "$exit_status"
@@ -173,6 +178,14 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
       exit 1
     fi
     install -m 0600 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
+    if [[ -n $AGENT_TERMINAL_OPENCODE_AUTH ]]; then
+      if [[ ! -f $AGENT_TERMINAL_OPENCODE_AUTH ]]; then
+        printf 'error: AGENT_TERMINAL_OPENCODE_AUTH points to a missing file: %s\n' "$AGENT_TERMINAL_OPENCODE_AUTH" >&2
+        exit 1
+      fi
+      install -d -m 0700 "$DATA_DIR/opencode"
+      install -m 0600 "$AGENT_TERMINAL_OPENCODE_AUTH" "$DATA_DIR/opencode/auth.json"
+    fi
   else
     printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG must point to an OpenCode config when prompt e2e is enabled\n' >&2
     exit 1
@@ -332,7 +345,7 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
 
   cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
   cat "$ARTIFACT_DIR/prompt-e2e.jsonl"
-  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/opencode/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME"
+  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/opencode/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE"
 fi
 
 printf '\nAll executed e2e phases passed.\n'
@@ -343,6 +356,26 @@ chmod 0755 "$INNER_SCRIPT"
 
 phase "e2e execution"
 printf 'Running e2e phases as %s; artifacts: %s\n' "$(id -un)" "$ARTIFACT_DIR"
+
+# Pass through the explicitly allowlisted provider env vars (values are stripped
+# by env -i otherwise). Everything else stays out of the sandbox.
+PROVIDER_ENV_PASSTHRU=()
+if [[ -n ${AGENT_TERMINAL_PROVIDER_ENV_VARS:-} ]]; then
+  IFS=',' read -ra _env_names <<<"$AGENT_TERMINAL_PROVIDER_ENV_VARS"
+  for _name in "${_env_names[@]}"; do
+    _name="${_name//[[:space:]]/}"
+    if [[ -z $_name ]]; then
+      continue
+    fi
+    if [[ ! $_name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      fail "invalid provider environment variable name: $_name"
+    fi
+    if [[ -n ${!_name:-} ]]; then
+      PROVIDER_ENV_PASSTHRU+=("$_name=${!_name}")
+    fi
+  done
+fi
+
 env -i \
   HOME="$(getent passwd "$(id -un)" | cut -d: -f6)" \
   REPO_ROOT="$REPO_ROOT" \
@@ -365,17 +398,21 @@ env -i \
   OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
   OPENCODE_DISABLE_CLAUDE_CODE=1 \
   OPENCODE_DISABLE_AUTOUPDATE=1 \
-  OPENCODE_DISABLE_MODELS_FETCH=1 \
+  OPENCODE_DISABLE_MODELS_FETCH="$AGENT_TERMINAL_DISABLE_MODELS_FETCH" \
   OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
   ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
   AGENT_TERMINAL_STATE="$STATE_DIR" \
   AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}" \
   AGENT_TERMINAL_ENABLE_PROMPT_E2E="$AGENT_TERMINAL_ENABLE_PROMPT_E2E" \
   AGENT_TERMINAL_HOST_PATH="$AGENT_TERMINAL_HOST_PATH" \
+  AGENT_TERMINAL_VERIFY_MODE="$AGENT_TERMINAL_VERIFY_MODE" \
+  AGENT_TERMINAL_OPENCODE_AUTH="$AGENT_TERMINAL_OPENCODE_AUTH" \
+  AGENT_TERMINAL_PROVIDER_ENV_VARS="${AGENT_TERMINAL_PROVIDER_ENV_VARS:-}" \
   OPENCODE_MODEL="$OPENCODE_MODEL" \
   OPENCODE_RUN_FLAGS="$OPENCODE_RUN_FLAGS" \
   WORKDIR="$WORKDIR" \
   ARTIFACT_DIR="$ARTIFACT_DIR" \
   PROMPT_FILE="$PROMPT_FILE" \
   JOB_NAME="$JOB_NAME" \
+  "${PROVIDER_ENV_PASSTHRU[@]}" \
   script -q -e -E never -c "$INNER_SCRIPT" "$ARTIFACT_DIR/transcript.log"

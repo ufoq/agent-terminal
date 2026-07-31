@@ -20,6 +20,7 @@ import {
   statSync,
 } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { Readable } from "node:stream"
 import { finished } from "node:stream/promises"
@@ -53,9 +54,8 @@ function run(cmd, args, options = {}) {
 }
 
 async function sha256File(path) {
-  const hash = createHash("sha256")
-  hash.update(await readFile(path))
-  return hash.digest("hex")
+  const data = await readFile(path)
+  return createHash("sha256").update(data).digest("hex")
 }
 
 function buildAgentTerminal() {
@@ -110,6 +110,12 @@ function copyDistToPackage(distDir, packageRoot) {
   cpSync(distDir, destDir, { recursive: true })
 }
 
+// The bundled Zellij binary is content-pinned by SHA-256, so a single verified
+// copy can be cached and reused across builds (offline builds, faster CI).
+const zellijCacheRoot =
+  process.env.AGENT_TERMINAL_ZELLIJ_CACHE ?? join(homedir(), ".cache", "agent-terminal-zellij")
+const zellijCachePath = join(zellijCacheRoot, `zellij-${ZELLIJ_VERSION}`)
+
 async function downloadZellij(packageRoot) {
   const zellijBinDir = join(packageRoot, "bin", "zellij")
   const zellijBinPath = join(zellijBinDir, "zellij")
@@ -120,6 +126,19 @@ async function downloadZellij(packageRoot) {
   }
 
   mkdirSync(zellijBinDir, { recursive: true })
+
+  // Prefer a previously verified copy from the local cache; only hit the
+  // network (GitHub) when the cache misses.
+  if (existsSync(zellijCachePath)) {
+    const cachedHash = await sha256File(zellijCachePath)
+    if (cachedHash === ZELLIJ_BINARY_SHA256) {
+      cpSync(zellijCachePath, zellijBinPath)
+      chmodSync(zellijBinPath, 0o755)
+      console.log(`Using cached Zellij ${ZELLIJ_VERSION} (${zellijCachePath})`)
+      return
+    }
+    console.log(`Cached Zellij hash mismatch (${cachedHash}); re-downloading.`)
+  }
 
   const archivePath = join(zellijBinDir, `zellij-${ZELLIJ_VERSION}.tar.gz`)
   console.log(`Downloading ${releaseUrl}`)
@@ -163,7 +182,10 @@ async function downloadZellij(packageRoot) {
 
   chmodSync(zellijBinPath, 0o755)
   rmSync(archivePath, { force: true })
-  console.log(`Bundled ${version} at ${zellijBinPath}`)
+
+  mkdirSync(zellijCacheRoot, { recursive: true })
+  cpSync(zellijBinPath, zellijCachePath)
+  console.log(`Bundled ${version} at ${zellijBinPath} (cached for future builds)`)
 }
 
 function cleanPackage(packageRoot) {

@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "e2e:opencode": "cd .. && bash scripts/e2e-opencode-local.sh",
     "e2e:opencode:skip-prompt": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-opencode-local.sh",
+    "e2e:opencode:real": "cd .. && bash scripts/e2e-opencode-real.sh",
     "release:check": "bun run check && bun run e2e:opencode"
   },
   "devDependencies": {
