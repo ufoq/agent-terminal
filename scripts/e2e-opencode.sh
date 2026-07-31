@@ -27,8 +27,10 @@ OPENCODE_RUN_FLAGS="${OPENCODE_RUN_FLAGS:-}"
 AGENT_TERMINAL_CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 AGENT_TERMINAL_OPENCODE_CONFIG="${AGENT_TERMINAL_OPENCODE_CONFIG:-}"
 AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
+AGENT_TERMINAL_HOST_PATH="${AGENT_TERMINAL_HOST_PATH:-$HOST_PATH}"
 
 readonly RUN_ID="$$"
+readonly JOB_NAME="prompt-smoke-$RUN_ID"
 readonly SHORT_BASE="/tmp/ate2e-$$"
 readonly WORKDIR="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID/workdir"
 readonly SANDBOX="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID"
@@ -163,36 +165,44 @@ install -d -m 0700 \
   "$STATE_DIR" \
   "$ZELLIJ_SOCKET_DIR" \
   "$ARTIFACT_DIR"
-install -m 0644 "$SKILL_SOURCE" "$CONFIG_DIR/skills/agent-terminal/SKILL.md"
 
-if [[ -n $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
-  if [[ ! -f $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
-    printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG points to a missing file: %s\n' "$AGENT_TERMINAL_OPENCODE_CONFIG" >&2
+if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
+  if [[ -n $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
+    if [[ ! -f $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
+      printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG points to a missing file: %s\n' "$AGENT_TERMINAL_OPENCODE_CONFIG" >&2
+      exit 1
+    fi
+    install -m 0600 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
+  else
+    printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG must point to an OpenCode config when prompt e2e is enabled\n' >&2
     exit 1
   fi
-  install -m 0600 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
-else
-  printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG must point to an OpenCode config when prompt e2e is enabled\n' >&2
-  exit 1
 fi
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
-cat >"$PROMPT_FILE" <<EOF
-This is an automated end-to-end test of the installed agent-terminal skill. Work only in $WORKDIR. Use Bash to execute each command, inspect every JSON response, and do not skip or reorder steps.
+sed -e "s/__RUN_ID__/$RUN_ID/g" -e "s|__WORKDIR__|$WORKDIR|g" >"$PROMPT_FILE" <<'PROMPT_EOF'
+This is an execution task, not a writing or planning task. Work only in __WORKDIR__. Do not output any prose, Markdown, YAML, code block, template, plan, or simulated transcript.
 
-Perform this exact 9-step lifecycle using the job name prompt-smoke-$RUN_ID:
-1. Run agent-terminal list and verify the JSON response has status ok and an empty jobs array.
-2. Start the interactive job with: agent-terminal start prompt-smoke-$RUN_ID -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "\$first"; IFS= read -r second; printf "second:%s\\n" "\$second"'
-3. Read prompt-smoke-$RUN_ID and verify its JSON screen contains prompt-ready. Retry read briefly only if the pane has not rendered it yet.
-4. Send the literal text hello-e2e with: agent-terminal send prompt-smoke-$RUN_ID -- hello-e2e
-5. Read prompt-smoke-$RUN_ID and verify its JSON screen contains first:hello-e2e.
-6. Press Enter with: agent-terminal press prompt-smoke-$RUN_ID -- Enter
-7. Read prompt-smoke-$RUN_ID and verify the JSON reports state exited with exit_code 0 and its screen contains second:.
-8. Stop prompt-smoke-$RUN_ID and verify the JSON reports cleaned_up true.
-9. Run agent-terminal list and verify the JSON response has status ok and an empty jobs array.
+Execution contract:
+- The ONLY tool you may use is Bash. Every assistant turn must emit exactly one Bash tool call for the first incomplete numbered step below.
+- Wait for the real Bash command's JSON output, inspect it, and then emit the next Bash tool call. Do not predict or invent command output.
+- You must NOT call the read, write, task, or any other non-Bash tool for any purpose. The word "read" below always means the Bash command `agent-terminal read`, never the read tool.
+- You must NOT delegate to a subagent, create files, or emit simulated/agent-terminal commands inside Markdown or YAML blocks.
+- If any step fails, stop and report the failure; only end with E2E_SUCCESS after step 9 passes.
+
+Perform this exact 9-step lifecycle using the job name prompt-smoke-__RUN_ID__:
+1. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
+2. Bash: start the interactive job with `agent-terminal start prompt-smoke-__RUN_ID__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
+3. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
+4. Bash: send the literal text hello-e2e with `agent-terminal send prompt-smoke-__RUN_ID__ -- hello-e2e`.
+5. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains first:hello-e2e.
+6. Bash: press Enter with `agent-terminal press prompt-smoke-__RUN_ID__ -- Enter`.
+7. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify the JSON reports state exited with exit_code 0 and its screen contains second:.
+8. Bash: `agent-terminal stop prompt-smoke-__RUN_ID__` and verify the JSON reports cleaned_up true.
+9. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 
 Do not modify repository files. After all nine steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
-EOF
+PROMPT_EOF
 
 readonly INNER_SCRIPT="$SANDBOX/run-e2e-inner.sh"
 cat >"$INNER_SCRIPT" <<'INNER'
@@ -297,37 +307,32 @@ fi
 if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   phase "OpenCode prompt e2e"
   printf '\n== OpenCode prompt e2e ==\n'
+
+  # The packaged plugin's config hook must register the agent-terminal skill.
+  # No manual skill install happens in this harness, so this check fails if the
+  # plugin fails to expose its bundled skills directory.
+  if ! timeout 30 opencode debug skill 2>/dev/null | grep -q '"name": "agent-terminal"'; then
+    printf 'error: agent-terminal skill was not registered by the plugin config hook\n' >&2
+    exit 1
+  fi
+
   # OPENCODE_RUN_FLAGS is intentionally word-split so callers can supply multiple CLI flags.
   # shellcheck disable=SC2086
-  if ! opencode --pure run --auto --format json --dir "$WORKDIR" --model "$OPENCODE_MODEL" \
+  PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-600}"
+  # Run opencode with a PATH that does not contain the bundled binaries, so the
+  # plugin's shell.env hook (not a preloaded PATH) must expose them to the Bash tool.
+  if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" opencode run --auto --format json --dir "$WORKDIR" --model "$OPENCODE_MODEL" \
     $OPENCODE_RUN_FLAGS -- "$(cat "$PROMPT_FILE")" \
     >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
     cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
     cat "$ARTIFACT_DIR/prompt-e2e.jsonl" >&2
-    printf 'error: opencode prompt e2e exited nonzero\n' >&2
+    printf 'error: opencode prompt e2e failed or exceeded %ss timeout\n' "$PROMPT_E2E_TIMEOUT" >&2
     exit 1
   fi
 
   cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
   cat "$ARTIFACT_DIR/prompt-e2e.jsonl"
-  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun -e '
-    const text = await Bun.file(process.env.PROMPT_LOG).text()
-    if (!text.includes("E2E_SUCCESS")) {
-      throw new Error("OpenCode output did not contain E2E_SUCCESS")
-    }
-    const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "")
-    if (lines.length === 0) throw new Error("OpenCode produced no JSON events")
-    for (const line of lines) {
-      const event = JSON.parse(line)
-      if (event.type === "error") {
-        throw new Error(`OpenCode emitted an error event: ${line}`)
-      }
-      const state = event.part?.state ?? event.state
-      if (event.type === "tool_use" && state?.status === "error") {
-        throw new Error(`OpenCode emitted an error tool event: ${line}`)
-      }
-    }
-  '
+  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/opencode/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME"
 fi
 
 printf '\nAll executed e2e phases passed.\n'
@@ -364,10 +369,13 @@ env -i \
   OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
   ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
   AGENT_TERMINAL_STATE="$STATE_DIR" \
+  AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}" \
   AGENT_TERMINAL_ENABLE_PROMPT_E2E="$AGENT_TERMINAL_ENABLE_PROMPT_E2E" \
+  AGENT_TERMINAL_HOST_PATH="$AGENT_TERMINAL_HOST_PATH" \
   OPENCODE_MODEL="$OPENCODE_MODEL" \
   OPENCODE_RUN_FLAGS="$OPENCODE_RUN_FLAGS" \
   WORKDIR="$WORKDIR" \
   ARTIFACT_DIR="$ARTIFACT_DIR" \
   PROMPT_FILE="$PROMPT_FILE" \
+  JOB_NAME="$JOB_NAME" \
   script -q -e -E never -c "$INNER_SCRIPT" "$ARTIFACT_DIR/transcript.log"

@@ -140,11 +140,26 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 ## End-to-end testing
 
-`scripts/e2e-opencode-local.sh` is a fully automated local-model release gate. It runs as the
-invoking user (no root or separate Unix account), downloads and caches LFM2-700M plus a pinned
-llama.cpp binary, starts a local OpenAI-compatible server, installs the locally built bundle
-plugin into an isolated OpenCode config, and exercises a real Zellij server end-to-end via
-`opencode --pure run`.
+`scripts/e2e-opencode-local.sh` is a fully automated, deterministic release gate. It runs as the
+invoking user (no root or separate Unix account), starts a local OpenAI-compatible **fixture**
+server that drives the 9-step agent-terminal lifecycle deterministically, installs the locally
+built bundle plugin into an isolated OpenCode config, and exercises a real Zellij server
+end-to-end via `opencode run`.
+
+The fixture replaces the LLM in the loop: instead of a model that must *decide* to call the
+Bash tool, the fixture emits the exact next `bash` tool call, validates each step's real
+agent-terminal JSON output, and advances through the lifecycle. This makes the gate fast
+(seconds, not minutes), deterministic (no model flakiness, no downloads), and still proves the
+full integration: real OpenCode, real plugin hooks, real Bash execution, and the real
+agent-terminal binary against a live Zellij server.
+
+The gate depends on the packaged plugin, not on manual setup:
+
+- The plugin's `config` hook must register the bundled skill — the harness asserts
+  `opencode debug skill` lists `agent-terminal` before running the prompt phase.
+- The plugin's `shell.env` hook must expose the binaries — the prompt phase runs with a PATH
+  that excludes the bundled directories, so `agent-terminal` and Zellij resolve only through
+  the plugin hook. If either hook breaks, the gate fails.
 
 ```bash
 bash scripts/e2e-opencode-local.sh
@@ -152,16 +167,15 @@ bash scripts/e2e-opencode-local.sh
 
 What it does in one call:
 
-1. Checks prerequisites (`bun`, `npm`, `opencode`, `curl`, `tar`, and `python3`).
-2. Downloads/caches LFM2-700M Q4_K_M and the pinned llama.cpp b9981 release archive
-   (SHA-256 verified).
-3. Builds and packs the local `@ufoq/opencode-agent-terminal-bundle-zellij` plugin.
-4. Starts `llama-server` on an ephemeral loopback port.
-5. Writes a scoped `opencode.json` inside a temp worktree
+1. Checks prerequisites (`bun`, `npm`, `opencode`, `curl`, and `python3`).
+2. Builds and packs the local `@ufoq/opencode-agent-terminal-bundle-zellij` plugin.
+3. Starts the e2e fixture server on an ephemeral loopback port.
+4. Writes a scoped `opencode.json` inside a temp worktree
    (`/tmp/e2e-test-repository.XXXXXX/.opencode/`).
-6. Runs the shared lifecycle harness: `bun test`, direct CLI smoke, and an LLM-driven
+5. Runs the shared lifecycle harness: `bun test`, direct CLI smoke, and the fixture-driven
    `opencode run` prompt phase.
-7. Cleans up on success and exits non-zero on any failure.
+6. Verifies the transcript with the strict verifier (9 ordered Bash `tool_use` events with
+   matching JSON payloads, no error events, no extraneous activity) and cleans up.
 
 Run from `opencode/` with Bun:
 
@@ -180,23 +194,29 @@ bun run release:check
 
 `scripts/e2e-opencode.sh` remains the shared lifecycle harness. It can still be invoked
 directly with an explicit `AGENT_TERMINAL_OPENCODE_CONFIG` and `OPENCODE_MODEL` for custom
-providers, but the default entry point is the local LFM2 flow.
+providers, but the default entry point is the deterministic fixture flow.
 
 Environment variables:
 
-- `AGENT_TERMINAL_E2E_CACHE_DIR` — persistent cache for model and llama.cpp (default
-  `~/.cache/agent-terminal/e2e-local`).
-- `AGENT_TERMINAL_THREADS` — llama.cpp thread count (default `min(nproc, 4)`).
-- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the LLM-driven phase (default `1`).
+- `AGENT_TERMINAL_FIXTURE_PORT` — port for the fixture server (default: auto from 19000).
+- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the prompt-driven phase (default `1`).
 - `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the wrapper builds the
   `x86_64-unknown-linux-musl` release binary.
+- `AGENT_TERMINAL_HOST_PATH` — PATH used for the `opencode run` prompt phase; defaults to the
+  invoking PATH. The fixture wrapper sets this to the original PATH (without the bundled
+  binaries) so the plugin's `shell.env` hook is the only binary source.
 - `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
 
-Artifacts are retained under `/tmp/agent-terminal-e2e-test-repository-<pid>/` unless
+Artifacts are retained under `/tmp/agent-terminal-e2e-fixture-<pid>/` unless
 `AGENT_TERMINAL_CLEANUP=1` is set.
 
-This is configuration isolation, not a security sandbox: the LLM still executes Bash as the
-invoking user. Run it only on throwaway machines or isolated CI runners.
+This is configuration isolation, not a security sandbox: the fixture still drives real Bash
+execution as the invoking user. Run it only on throwaway machines or isolated CI runners.
+
+For GitHub Actions, the full gate fits comfortably in the 10-minute budget on a standard
+Linux runner (warm-cache `bun run release:check` completes in roughly a minute); the Rust
+quality gate (`cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test
+--all-targets`) dominates the runtime and can be run in parallel with the OpenCode gate.
 
 ## Development
 
