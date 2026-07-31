@@ -6,6 +6,7 @@
 /opencode/npm/packages/*/dist/
 /opencode/npm/packages/*/bin/
 /opencode/npm/packages/*/skills/
+/opencode/npm/packages/*/*.tgz
 /.omo/
 /.*
 !.github/

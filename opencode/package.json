@@ -9,8 +9,11 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "e2e:opencode": "cd .. && bash scripts/e2e-opencode.sh",
-    "e2e:opencode:skip-prompt": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-opencode.sh"
+    "e2e:local": "cd .. && bash scripts/e2e-opencode-local.sh",
+    "e2e:remote": "cd .. && bash scripts/e2e-opencode.sh",
+    "e2e:opencode": "bun run e2e:remote",
+    "e2e:opencode:skip-prompt": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-opencode.sh",
+    "release:check": "bun run check && bun run e2e:local"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",
