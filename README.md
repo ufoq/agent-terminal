@@ -140,41 +140,28 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 ## End-to-end testing
 
-`scripts/e2e-opencode.sh` is a single-command release gate. It runs as the invoking user
-(no root or separate Unix account), loads only the local skill via `opencode --pure run`,
-and exercises a real Zellij server end-to-end.
+`scripts/e2e-opencode-local.sh` is a fully automated local-model release gate. It runs as the
+invoking user (no root or separate Unix account), downloads and caches LFM2-700M plus a pinned
+llama.cpp binary, starts a local OpenAI-compatible server, installs the locally built bundle
+plugin into an isolated OpenCode config, and exercises a real Zellij server end-to-end via
+`opencode --pure run`.
 
 ```bash
-bash scripts/e2e-opencode.sh
+bash scripts/e2e-opencode-local.sh
 ```
 
 What it does in one call:
 
-1. Checks prerequisites (`bun`, `zellij`, `script`, `cargo` or `AGENT_TERMINAL_BIN`,
-   and `opencode` when the prompt phase is enabled).
-2. Preflights the configured LLM endpoint (`/models`).
-3. Builds `agent-terminal` in release mode if a binary path is not provided.
-4. Copies the skill into an isolated OpenCode config sandbox.
-5. Runs `bun test` against the skill contract.
-6. Runs a direct CLI smoke lifecycle (`list → start → read → stop → list`).
-7. Runs an LLM-driven `opencode run` lifecycle that validates the skill end-to-end.
-8. Prints the artifact path and exits non-zero on any failure.
-
-Environment variables:
-
-- `AGENT_TERMINAL_RUN_PREFIX` — prefix for the temporary run directory (default `e2e`).
-- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the LLM-driven phase (default `1`).
-  Set to `0` to run only the Bun tests and direct CLI smoke.
-- `OPENCODE_MODEL` — model passed to `opencode run --model` (default
-  `litellm/ollama-cloud/deepseek-v4-flash`). The default generated config supports only
-  `litellm/*` models; set `AGENT_TERMINAL_OPENCODE_CONFIG` for other providers.
-- `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the runner builds
-  `target/release/agent-terminal`.
-- `AGENT_TERMINAL_OPENCODE_CONFIG` — path to a custom `opencode.json`.
-- `AGENT_TERMINAL_LITELLM_BASE_URL` — default `http://host.docker.internal:57002/v1`.
-- `AGENT_TERMINAL_LITELLM_API_KEY` — default `local-no-secret`.
-- `AGENT_TERMINAL_SKIP_PREFLIGHT` — set to `1` to skip the LLM endpoint preflight.
-- `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
+1. Checks prerequisites (`bun`, `npm`, `opencode`, `curl`, `tar`, and `python3`).
+2. Downloads/caches LFM2-700M Q4_K_M and the pinned llama.cpp b9981 release archive
+   (SHA-256 verified).
+3. Builds and packs the local `@ufoq/opencode-agent-terminal-bundle-zellij` plugin.
+4. Starts `llama-server` on an ephemeral loopback port.
+5. Writes a scoped `opencode.json` inside a temp worktree
+   (`/tmp/e2e-test-repository.XXXXXX/.opencode/`).
+6. Runs the shared lifecycle harness: `bun test`, direct CLI smoke, and an LLM-driven
+   `opencode run` prompt phase.
+7. Cleans up on success and exits non-zero on any failure.
 
 Run from `opencode/` with Bun:
 
@@ -184,8 +171,29 @@ bun run e2e:opencode
 bun run e2e:opencode:skip-prompt
 ```
 
-Artifacts are retained under `/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-<pid>/`
-unless `AGENT_TERMINAL_CLEANUP=1` is set.
+The full release gate also runs `bun run check` first:
+
+```bash
+cd opencode
+bun run release:check
+```
+
+`scripts/e2e-opencode.sh` remains the shared lifecycle harness. It can still be invoked
+directly with an explicit `AGENT_TERMINAL_OPENCODE_CONFIG` and `OPENCODE_MODEL` for custom
+providers, but the default entry point is the local LFM2 flow.
+
+Environment variables:
+
+- `AGENT_TERMINAL_E2E_CACHE_DIR` — persistent cache for model and llama.cpp (default
+  `~/.cache/agent-terminal/e2e-local`).
+- `AGENT_TERMINAL_THREADS` — llama.cpp thread count (default `min(nproc, 4)`).
+- `AGENT_TERMINAL_ENABLE_PROMPT_E2E` — run the LLM-driven phase (default `1`).
+- `AGENT_TERMINAL_BIN` — path to a pre-built binary; if unset, the wrapper builds the
+  `x86_64-unknown-linux-musl` release binary.
+- `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
+
+Artifacts are retained under `/tmp/agent-terminal-e2e-test-repository-<pid>/` unless
+`AGENT_TERMINAL_CLEANUP=1` is set.
 
 This is configuration isolation, not a security sandbox: the LLM still executes Bash as the
 invoking user. Run it only on throwaway machines or isolated CI runners.

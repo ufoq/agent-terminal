@@ -22,12 +22,10 @@ HOST_PATH="$ORIG_PATH"
 AGENT_TERMINAL_RUN_PREFIX="${AGENT_TERMINAL_RUN_PREFIX:-e2e}"
 AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}"
 AGENT_TERMINAL_ENABLE_PROMPT_E2E="${AGENT_TERMINAL_ENABLE_PROMPT_E2E:-1}"
-OPENCODE_MODEL="${OPENCODE_MODEL:-litellm/ollama-cloud/deepseek-v4-flash}"
+OPENCODE_MODEL="${OPENCODE_MODEL:-}"
 OPENCODE_RUN_FLAGS="${OPENCODE_RUN_FLAGS:-}"
 AGENT_TERMINAL_CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 AGENT_TERMINAL_OPENCODE_CONFIG="${AGENT_TERMINAL_OPENCODE_CONFIG:-}"
-AGENT_TERMINAL_LITELLM_BASE_URL="${AGENT_TERMINAL_LITELLM_BASE_URL:-http://host.docker.internal:57002/v1}"
-AGENT_TERMINAL_LITELLM_API_KEY="${AGENT_TERMINAL_LITELLM_API_KEY:-local-no-secret}"
 AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
 
 readonly RUN_ID="$$"
@@ -107,23 +105,20 @@ else
     missing+=("cargo")
   fi
 fi
-if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 && -z ${AGENT_TERMINAL_OPENCODE_CONFIG:-} ]]; then
+if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   if ! command -v opencode >/dev/null 2>&1; then
     missing+=("opencode")
+  fi
+  if [[ -z ${AGENT_TERMINAL_OPENCODE_CONFIG:-} ]]; then
+    missing+=("AGENT_TERMINAL_OPENCODE_CONFIG")
+  fi
+  if [[ -z ${OPENCODE_MODEL:-} ]]; then
+    missing+=("OPENCODE_MODEL")
   fi
 fi
 if [[ ${#missing[@]} -gt 0 ]]; then
   printf 'error: missing required tools: %s\n' "${missing[*]}" >&2
   exit 1
-fi
-
-if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 && $AGENT_TERMINAL_SKIP_PREFLIGHT != 1 ]]; then
-  phase "proxy preflight"
-  printf 'Preflight: model=%s endpoint=%s\n' "$OPENCODE_MODEL" "$AGENT_TERMINAL_LITELLM_BASE_URL"
-  if ! curl -fsS "$AGENT_TERMINAL_LITELLM_BASE_URL/models" -H "Authorization: Bearer $AGENT_TERMINAL_LITELLM_API_KEY" >/dev/null 2>"$SANDBOX/preflight.log"; then
-    printf 'error: cannot reach LLM endpoint %s/models (see %s/preflight.log)\n' "$AGENT_TERMINAL_LITELLM_BASE_URL" "$SANDBOX" >&2
-    exit 1
-  fi
 fi
 
 phase "binary setup"
@@ -177,43 +172,8 @@ if [[ -n $AGENT_TERMINAL_OPENCODE_CONFIG ]]; then
   fi
   install -m 0600 "$AGENT_TERMINAL_OPENCODE_CONFIG" "$CONFIG_DIR/opencode.json"
 else
-  if [[ $OPENCODE_MODEL != litellm/* ]]; then
-    printf 'error: default generated opencode.json only supports litellm/* models. Set AGENT_TERMINAL_OPENCODE_CONFIG for other providers.\n' >&2
-    exit 1
-  fi
-  model_alias="${OPENCODE_MODEL#litellm/}"
-  python3 - "$AGENT_TERMINAL_LITELLM_BASE_URL" "$AGENT_TERMINAL_LITELLM_API_KEY" "$model_alias" "$OPENCODE_MODEL" <<'PY' >"$CONFIG_DIR/opencode.json"
-import json, sys
-base_url, api_key, alias, full_name = sys.argv[1:5]
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "autoupdate": False,
-    "share": "disabled",
-    "permission": {"*": "allow", "skill": {"*": "allow"}},
-    "disabled_providers": ["opencode"],
-    "plugin": [],
-    "provider": {
-        "litellm": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "LiteLLM (local)",
-            "options": {
-                "baseURL": base_url,
-                "apiKey": api_key,
-                "autoload": False,
-            },
-            "models": {
-                alias: {
-                    "name": full_name,
-                    "tool_call": True,
-                    "limit": {"context": 500000, "output": 65536},
-                }
-            },
-        }
-    },
-}
-json.dump(config, sys.stdout, indent=2)
-PY
-  chmod 0600 "$CONFIG_DIR/opencode.json"
+  printf 'error: AGENT_TERMINAL_OPENCODE_CONFIG must point to an OpenCode config when prompt e2e is enabled\n' >&2
+  exit 1
 fi
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
