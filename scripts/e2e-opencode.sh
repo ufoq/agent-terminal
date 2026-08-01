@@ -345,7 +345,7 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
 
   cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
   cat "$ARTIFACT_DIR/prompt-e2e.jsonl"
-  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/opencode/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE"
+  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/opencode/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE" --workdir "$WORKDIR"
 fi
 
 printf '\nAll executed e2e phases passed.\n'

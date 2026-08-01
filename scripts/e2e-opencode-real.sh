@@ -91,7 +91,10 @@ fi
 if [[ ! -f $USER_CONFIG ]]; then
   fail "config not found: $USER_CONFIG (set AGENT_TERMINAL_OPENCODE_CONFIG)"
 fi
-USER_AUTH="${AGENT_TERMINAL_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
+# Capture the source before clearing the inherited selector; the wrapper must only
+# project this immutable path's selected provider entry.
+readonly USER_AUTH="${AGENT_TERMINAL_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
+unset AGENT_TERMINAL_OPENCODE_AUTH
 PROVIDER_ENV_VARS="${AGENT_TERMINAL_PROVIDER_ENV_VARS:-}"
 
 PROVIDER_ID="${OPENCODE_MODEL%%/*}"
@@ -147,7 +150,6 @@ SANDBOX_AUTH="$RUN_DIR/.opencode/auth.json"
 # plugins, MCPs, agents, commands and instructions never reach the sandbox.
 python3 - "$USER_CONFIG" "$PROVIDER_ID" "$MODEL_ALIAS" "$OPENCODE_MODEL" "$PLUGIN_PATH" "$SANDBOX_CONFIG" <<'PY'
 import json
-import re
 import sys
 
 def strip_jsonc(text: str) -> str:
@@ -187,7 +189,37 @@ def strip_jsonc(text: str) -> str:
     return "".join(out)
 
 def strip_trailing_commas(text: str) -> str:
-    return re.sub(r",(\s*[}\]])", r"\1", text)
+    out = []
+    i = 0
+    n = len(text)
+    in_string = False
+    while i < n:
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+            continue
+        if c == ",":
+            j = i + 1
+            while j < n and text[j].isspace():
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 user_config_path, provider_id, model_alias, model_spec, plugin_path, out_path = sys.argv[1:7]
 
@@ -277,10 +309,15 @@ export AGENT_TERMINAL_OPENCODE_CONFIG="$SANDBOX_CONFIG"
 export AGENT_TERMINAL_VERIFY_MODE="real"
 export AGENT_TERMINAL_DISABLE_MODELS_FETCH=0
 export AGENT_TERMINAL_SKIP_PREFLIGHT=1
-export AGENT_TERMINAL_ENABLE_PROMPT_E2E=1
+PROMPT_E2E="${AGENT_TERMINAL_ENABLE_PROMPT_E2E:-1}"
+if [[ $PROMPT_E2E != 1 && ${AGENT_TERMINAL_REAL_MODEL_PROBE:-0} != 1 ]]; then
+  fail "prompt e2e can only be disabled with AGENT_TERMINAL_REAL_MODEL_PROBE=1"
+fi
+export AGENT_TERMINAL_ENABLE_PROMPT_E2E="$PROMPT_E2E"
 export AGENT_TERMINAL_CLEANUP="$CLEANUP"
 export AGENT_TERMINAL_RUN_PREFIX="e2e-real"
 export OPENCODE_MODEL="$OPENCODE_MODEL"
+export OPENCODE_RUN_FLAGS=""
 export AGENT_TERMINAL_PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-900}"
 if [[ -f $SANDBOX_AUTH ]]; then
   export AGENT_TERMINAL_OPENCODE_AUTH="$SANDBOX_AUTH"

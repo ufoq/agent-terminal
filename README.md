@@ -249,11 +249,19 @@ What it does:
    and passes through only an explicit env-var allowlist
    (`AGENT_TERMINAL_PROVIDER_ENV_VARS`, comma-separated) — never the whole host environment.
 3. Runs the shared lifecycle harness in `real` verify mode: the same 9 ordered JSON
-   postconditions and `E2E_SUCCESS`, but tolerant of up to 8 observational `read`/`list`
-   retries and unrelated tools, while still rejecting failed calls, out-of-order or duplicate
-   mutating operations, incomplete cleanup, and top-level errors.
+   postconditions and `E2E_SUCCESS`, allowing up to 8 successful retries of the current
+   observational `read`/`list` milestone. The verifier is otherwise closed-world: it accepts
+   only exact lifecycle command templates, the harness workdir, and completed Bash calls while
+   rejecting unrelated tools, altered or compound commands, failed calls, out-of-order or
+   duplicate mutations, incomplete cleanup, and top-level errors.
 4. Always scrubs the projected config and auth data on exit — even on failure — retaining
-   only the evidence directory.
+   only an evidence directory. Evidence contains unsanitized model/tool output and must be
+   treated as sensitive.
+
+This isolates the OpenCode configuration inputs, not the execution environment: the selected
+provider, plugin, model, and Bash commands still run with the invoking user's privileges. Use a
+disposable host or isolated runner, and treat provider credentials exposed to the selected model
+as active during the test.
 
 Environment variables:
 
@@ -266,6 +274,8 @@ Environment variables:
   the sandbox (e.g. `OPENAI_API_KEY,ANTHROPIC_API_KEY`).
 - `AGENT_TERMINAL_PROMPT_E2E_TIMEOUT` — model run timeout in seconds (default `900`).
 - `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI` — set to `1` to permit execution under CI.
+- `AGENT_TERMINAL_REAL_MODEL_PROBE` — set to `1` only for projection/auth setup probes that
+  intentionally set `AGENT_TERMINAL_ENABLE_PROMPT_E2E=0`; this is not a lifecycle test.
 - `AGENT_TERMINAL_CLEANUP` — set to `1` to remove the real-model wrapper worktree (default `0`,
   while projected config/auth data are always scrubbed).
 
