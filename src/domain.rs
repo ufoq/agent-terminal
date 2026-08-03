@@ -132,21 +132,15 @@ pub enum JobState {
     Exited,
 }
 
+/// A Zellij key-binding token. Only `zellij_token` is ever consumed by the
+/// `press` command; the human-facing display form was dead code and removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Key {
-    public_name: String,
-    zellij_token: String,
-}
+pub struct Key(String);
 
 impl Key {
     #[must_use]
     pub fn zellij_token(&self) -> &str {
-        &self.zellij_token
-    }
-
-    #[must_use]
-    pub fn public_name(&self) -> &str {
-        &self.public_name
+        &self.0
     }
 }
 
@@ -171,10 +165,7 @@ impl FromStr for Key {
             "Right",
         ];
         if named.contains(&value) {
-            return Ok(Self {
-                public_name: value.to_owned(),
-                zellij_token: value.to_owned(),
-            });
+            return Ok(Self(value.to_owned()));
         }
         if let Some(number) = value
             .strip_prefix('F')
@@ -182,27 +173,18 @@ impl FromStr for Key {
             && (1..=12).contains(&number)
             && value == format!("F{number}")
         {
-            return Ok(Self {
-                public_name: value.to_owned(),
-                zellij_token: value.to_owned(),
-            });
+            return Ok(Self(value.to_owned()));
         }
         if let Some(character) = single_character(value, "Ctrl+")
             && character.is_ascii_alphabetic()
         {
-            return Ok(Self {
-                public_name: format!("Ctrl+{}", character.to_ascii_uppercase()),
-                zellij_token: format!("Ctrl {}", character.to_ascii_lowercase()),
-            });
+            return Ok(Self(format!("Ctrl {}", character.to_ascii_lowercase())));
         }
         if let Some(character) = single_character(value, "Alt+")
             && character.is_ascii()
             && !character.is_ascii_control()
         {
-            return Ok(Self {
-                public_name: format!("Alt+{character}"),
-                zellij_token: format!("Alt {character}"),
-            });
+            return Ok(Self(format!("Alt {character}")));
         }
         Err(Error::InvalidInput {
             message: format!("unsupported key {value:?}"),

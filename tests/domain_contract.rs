@@ -95,13 +95,11 @@ fn input_responses_are_empty_flat_successes() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn key_grammar_preserves_public_names() -> Result<(), Box<dyn std::error::Error>> {
+fn key_grammar_preserves_zellij_tokens() -> Result<(), Box<dyn std::error::Error>> {
     let control = Key::from_str("Ctrl+d")?;
     let alt = Key::from_str("Alt+!")?;
 
-    assert_eq!(control.public_name(), "Ctrl+D");
     assert_eq!(control.zellij_token(), "Ctrl d");
-    assert_eq!(alt.public_name(), "Alt+!");
     assert_eq!(alt.zellij_token(), "Alt !");
     assert!(Key::from_str("Ctrl+7").is_err());
     Ok(())
@@ -272,7 +270,6 @@ fn key_parser_accepts_every_named_key() -> Result<(), Box<dyn std::error::Error>
         "Right",
     ] {
         let key = Key::from_str(name)?;
-        assert_eq!(key.public_name(), name);
         assert_eq!(key.zellij_token(), name);
     }
     Ok(())
@@ -283,7 +280,6 @@ fn key_parser_accepts_exactly_f1_through_f12() -> Result<(), Box<dyn std::error:
     for number in 1..=12 {
         let name = format!("F{number}");
         let key = Key::from_str(&name)?;
-        assert_eq!(key.public_name(), name);
         assert_eq!(key.zellij_token(), name);
     }
     Ok(())
@@ -301,12 +297,10 @@ fn control_keys_normalize_ascii_letter_case() -> Result<(), Box<dyn std::error::
     for letter in b'a'..=b'z' {
         let lower = char::from(letter);
         let upper = lower.to_ascii_uppercase();
-        let public_name = format!("Ctrl+{upper}");
         let zellij_token = format!("Ctrl {lower}");
 
         for input_letter in [lower, upper] {
             let key = Key::from_str(&format!("Ctrl+{input_letter}"))?;
-            assert_eq!(key.public_name(), public_name);
             assert_eq!(key.zellij_token(), zellij_token);
         }
     }
@@ -332,12 +326,8 @@ fn control_keys_reject_non_letters_and_multiple_characters() {
 fn alt_keys_preserve_printable_ascii() -> Result<(), Box<dyn std::error::Error>> {
     for byte in 0x20_u8..=0x7e {
         let character = char::from(byte);
-        let public_name = format!("Alt+{character}");
-        let zellij_token = format!("Alt {character}");
-        let key = Key::from_str(&public_name)?;
-
-        assert_eq!(key.public_name(), public_name);
-        assert_eq!(key.zellij_token(), zellij_token);
+        let key = Key::from_str(&format!("Alt+{character}"))?;
+        assert_eq!(key.zellij_token(), format!("Alt {character}"));
     }
     Ok(())
 }
