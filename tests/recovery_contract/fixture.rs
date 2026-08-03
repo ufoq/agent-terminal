@@ -26,7 +26,7 @@ impl Fixture {
         let project = temp.path().join("project");
         fs::create_dir_all(&project)?;
         let project = project.canonicalize()?;
-        let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+        let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
         let store = StateStore::new(paths);
         let registry = Registry::new(project.clone())?;
         Ok(Self {

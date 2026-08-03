@@ -130,7 +130,6 @@ impl FromStr for TerminalPaneId {
 pub enum JobState {
     Running,
     Exited,
-    Lost,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +214,38 @@ impl FromStr for Key {
 pub struct BoundedScreen {
     pub screen: String,
     pub truncated: bool,
+}
+
+/// Strip ANSI/terminal escape sequences and normalize line endings and control
+/// characters so the returned screen text stays readable and token-efficient.
+///
+/// The order matters: escapes are removed first, then CRLF/CR are folded to LF,
+/// then remaining C0 controls except LF and tab are dropped. Callers then bound
+/// the result to a fixed line/byte budget.
+#[must_use]
+pub fn normalize_screen(source: &str) -> String {
+    let stripped = strip_ansi_escapes::strip(source.as_bytes());
+    let stripped = String::from_utf8_lossy(&stripped);
+    let mut normalized = String::with_capacity(stripped.len());
+    let mut previous_cr = false;
+    for character in stripped.chars() {
+        if character == '\r' {
+            previous_cr = true;
+            continue;
+        }
+        if previous_cr && character != '\n' {
+            normalized.push('\n');
+        }
+        previous_cr = false;
+        let keep = matches!(character, '\n' | '\t') || !character.is_ascii_control();
+        if keep {
+            normalized.push(character);
+        }
+    }
+    if previous_cr {
+        normalized.push('\n');
+    }
+    normalized
 }
 
 #[must_use]

@@ -22,15 +22,22 @@ macro_rules! os_args {
 pub struct ZellijCli {
     executable: PathBuf,
     config: PathBuf,
+    socket_dir: PathBuf,
     timeout: Duration,
 }
 
 impl ZellijCli {
     #[must_use]
-    pub const fn new(executable: PathBuf, config: PathBuf, timeout: Duration) -> Self {
+    pub const fn new(
+        executable: PathBuf,
+        config: PathBuf,
+        socket_dir: PathBuf,
+        timeout: Duration,
+    ) -> Self {
         Self {
             executable,
             config,
+            socket_dir,
             timeout,
         }
     }
@@ -40,21 +47,26 @@ impl ZellijCli {
         if output.status.success() {
             Ok(output)
         } else {
+            tracing::warn!(
+                status = %output.status,
+                stderr = %output.stderr.trim(),
+                arguments = ?arguments,
+                "zellij command failed"
+            );
             Err(Error::ZellijFailed {
-                message: format!(
-                    "exit {}: {}",
-                    output
-                        .status
-                        .code()
-                        .map_or_else(|| "signal".to_owned(), |code| code.to_string()),
-                    output.stderr.trim()
-                ),
+                message: "terminal backend operation failed".to_owned(),
             })
         }
     }
 
     fn invoke(&self, arguments: &[OsString], timeout: Duration) -> Result<ProcessOutput, Error> {
-        invoke(&self.executable, &self.config, arguments, timeout)
+        invoke(
+            &self.executable,
+            &self.config,
+            &self.socket_dir,
+            arguments,
+            timeout,
+        )
     }
 }
 
@@ -95,8 +107,9 @@ impl Zellij for ZellijCli {
         } else if output.stderr.contains("No active zellij sessions") {
             Ok(false)
         } else {
+            tracing::warn!(stderr = %output.stderr.trim(), "zellij list-sessions failed");
             Err(Error::ZellijFailed {
-                message: output.stderr.trim().to_owned(),
+                message: "terminal backend operation failed".to_owned(),
             })
         }
     }
@@ -132,7 +145,16 @@ impl Zellij for ZellijCli {
         ]);
         arguments.extend(spec.command.iter().map(OsString::from));
         let output = self.checked(&arguments, timeout)?;
-        output.stdout.trim().parse()
+        output.stdout.trim().parse().map_err(|error| {
+            tracing::warn!(
+                error = %error,
+                raw = %output.stdout.trim(),
+                "terminal backend returned an invalid pane id"
+            );
+            Error::ZellijFailed {
+                message: "terminal backend returned an invalid pane id".to_owned(),
+            }
+        })
     }
 
     fn dump_screen(
@@ -142,8 +164,9 @@ impl Zellij for ZellijCli {
         timeout: Duration,
     ) -> Result<(), Error> {
         if path.exists() {
+            tracing::warn!("screen dump path already exists");
             return Err(Error::InvalidInput {
-                message: format!("screen dump path already exists: {}", path.display()),
+                message: "screen capture path is already in use".to_owned(),
             });
         }
         self.checked(
@@ -161,8 +184,9 @@ impl Zellij for ZellijCli {
             timeout,
         )?;
         if !path.is_file() {
+            tracing::warn!("dump-screen did not create the requested capture file");
             return Err(Error::ZellijFailed {
-                message: format!("dump-screen did not create {}", path.display()),
+                message: "screen capture was not produced by the terminal backend".to_owned(),
             });
         }
         Ok(())

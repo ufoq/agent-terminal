@@ -40,6 +40,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(data) => emit(&Response::ok(data), pretty, 0),
         Err(error) => {
+            tracing::warn!(%error, "agent-terminal operation failed");
             let code = error.exit_code();
             emit(&Response::error(&error), pretty, code)
         }

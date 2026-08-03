@@ -37,18 +37,18 @@ const STEPS = [
   {
     cmd: (_job: string) => `agent-terminal list`,
     onResult: "list",
-    check: (data: Record<string, unknown>): StepCheck => {
-      if (!Array.isArray(data.jobs))
+    check: (body: Record<string, unknown>): StepCheck => {
+      if (!Array.isArray(body.jobs))
         return {
           ok: false,
           retry: false,
-          error: `data.jobs is not an array: ${JSON.stringify(data.jobs)}`,
+          error: `jobs is not an array: ${JSON.stringify(body.jobs)}`,
         }
-      if (data.jobs.length !== 0)
+      if (body.jobs.length !== 0)
         return {
           ok: false,
           retry: false,
-          error: `expected empty jobs, got ${JSON.stringify(data.jobs)}`,
+          error: `expected empty jobs, got ${JSON.stringify(body.jobs)}`,
         }
       return { ok: true }
     },
@@ -57,39 +57,27 @@ const STEPS = [
     cmd: (job: string) =>
       `agent-terminal start ${job} -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
     onResult: "start",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
-        return {
-          ok: false,
-          retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
-        }
-      if (data.state !== "running")
-        return { ok: false, retry: false, error: `state != running: ${JSON.stringify(data.state)}` }
+    check: (body: Record<string, unknown>, _job: string): StepCheck => {
+      if (body.state !== "running")
+        return { ok: false, retry: false, error: `state != running: ${JSON.stringify(body.state)}` }
       return { ok: true }
     },
   },
   {
     cmd: (job: string) => `agent-terminal read ${job}`,
     onResult: "read-prompt",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
+    check: (body: Record<string, unknown>, _job: string): StepCheck => {
+      if (typeof body.screen !== "string")
         return {
           ok: false,
           retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
+          error: `screen is not a string: ${JSON.stringify(body.screen)}`,
         }
-      if (typeof data.screen !== "string")
-        return {
-          ok: false,
-          retry: false,
-          error: `screen is not a string: ${JSON.stringify(data.screen)}`,
-        }
-      if (!data.screen.includes("prompt-ready"))
+      if (!body.screen.includes("prompt-ready"))
         return {
           ok: false,
           retry: true,
-          error: `screen lacks prompt-ready (state=${JSON.stringify(data.state)}): ${data.screen.substring(0, 80)}`,
+          error: `screen lacks prompt-ready (state=${JSON.stringify(body.state)}): ${body.screen.substring(0, 80)}`,
         }
       return { ok: true }
     },
@@ -97,45 +85,25 @@ const STEPS = [
   {
     cmd: (job: string) => `agent-terminal send ${job} -- hello-e2e`,
     onResult: "send",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
-        return {
-          ok: false,
-          retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
-        }
-      if (data.issued !== "text")
-        return { ok: false, retry: false, error: `issued != text: ${JSON.stringify(data.issued)}` }
-      if (data.submitted !== true)
-        return {
-          ok: false,
-          retry: false,
-          error: `submitted != true: ${JSON.stringify(data.submitted)}`,
-        }
+    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
       return { ok: true }
     },
   },
   {
     cmd: (job: string) => `agent-terminal read ${job}`,
     onResult: "read-first",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
+    check: (body: Record<string, unknown>, _job: string): StepCheck => {
+      if (typeof body.screen !== "string")
         return {
           ok: false,
           retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
+          error: `screen is not a string: ${JSON.stringify(body.screen)}`,
         }
-      if (typeof data.screen !== "string")
-        return {
-          ok: false,
-          retry: false,
-          error: `screen is not a string: ${JSON.stringify(data.screen)}`,
-        }
-      if (!data.screen.includes("first:hello-e2e"))
+      if (!body.screen.includes("first:hello-e2e"))
         return {
           ok: false,
           retry: true,
-          error: `screen lacks first:hello-e2e (state=${JSON.stringify(data.state)}): ${data.screen.substring(0, 80)}`,
+          error: `screen lacks first:hello-e2e (state=${JSON.stringify(body.state)}): ${body.screen.substring(0, 80)}`,
         }
       return { ok: true }
     },
@@ -143,47 +111,27 @@ const STEPS = [
   {
     cmd: (job: string) => `agent-terminal press ${job} -- Enter`,
     onResult: "press",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
-        return {
-          ok: false,
-          retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
-        }
-      if (data.issued !== "keys")
-        return { ok: false, retry: false, error: `issued != keys: ${JSON.stringify(data.issued)}` }
-      if (!Array.isArray(data.keys) || !data.keys.includes("Enter"))
-        return {
-          ok: false,
-          retry: false,
-          error: `keys missing Enter: ${JSON.stringify(data.keys)}`,
-        }
+    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
       return { ok: true }
     },
   },
   {
     cmd: (job: string) => `agent-terminal read ${job}`,
     onResult: "read-second",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
+    check: (body: Record<string, unknown>, _job: string): StepCheck => {
+      if (body.state !== "exited")
+        return { ok: false, retry: true, error: `state != exited: ${JSON.stringify(body.state)}` }
+      if (body.exit_code !== 0)
         return {
           ok: false,
           retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
+          error: `exit_code != 0: ${JSON.stringify(body.exit_code)}`,
         }
-      if (data.state !== "exited")
-        return { ok: false, retry: true, error: `state != exited: ${JSON.stringify(data.state)}` }
-      if (data.exit_code !== 0)
+      if (typeof body.screen !== "string" || !body.screen.includes("second:"))
         return {
           ok: false,
           retry: false,
-          error: `exit_code != 0: ${JSON.stringify(data.exit_code)}`,
-        }
-      if (typeof data.screen !== "string" || !data.screen.includes("second:"))
-        return {
-          ok: false,
-          retry: false,
-          error: `screen lacks second: ${JSON.stringify(data.screen)}`,
+          error: `screen lacks second: ${JSON.stringify(body.screen)}`,
         }
       return { ok: true }
     },
@@ -191,37 +139,25 @@ const STEPS = [
   {
     cmd: (job: string) => `agent-terminal stop ${job}`,
     onResult: "stop",
-    check: (data: Record<string, unknown>, job: string): StepCheck => {
-      if (data.job !== job)
-        return {
-          ok: false,
-          retry: false,
-          error: `job mismatch: ${JSON.stringify(data.job)} != ${job}`,
-        }
-      if (data.cleaned_up !== true)
-        return {
-          ok: false,
-          retry: false,
-          error: `cleaned_up != true: ${JSON.stringify(data.cleaned_up)}`,
-        }
+    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
       return { ok: true }
     },
   },
   {
     cmd: (_job: string) => `agent-terminal list`,
     onResult: "list-final",
-    check: (data: Record<string, unknown>): StepCheck => {
-      if (!Array.isArray(data.jobs))
+    check: (body: Record<string, unknown>): StepCheck => {
+      if (!Array.isArray(body.jobs))
         return {
           ok: false,
           retry: false,
-          error: `data.jobs is not an array: ${JSON.stringify(data.jobs)}`,
+          error: `jobs is not an array: ${JSON.stringify(body.jobs)}`,
         }
-      if (data.jobs.length !== 0)
+      if (body.jobs.length !== 0)
         return {
           ok: false,
           retry: false,
-          error: `expected empty jobs, got ${JSON.stringify(data.jobs)}`,
+          error: `expected empty jobs, got ${JSON.stringify(body.jobs)}`,
         }
       return { ok: true }
     },
@@ -238,20 +174,21 @@ function extractJobFromMessages(messages: Array<{ content: string | null }>): st
   return null
 }
 
-function parseResultBody(
-  content: string,
-): { status: string; data: Record<string, unknown> } | null {
+function isFlatResult(value: unknown): value is { status: string } & Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    "status" in value &&
+    typeof value.status === "string"
+  )
+}
+
+function parseResultBody(content: string): ({ status: string } & Record<string, unknown>) | null {
   const trimmed = content.trim()
   try {
-    const parsed = JSON.parse(trimmed) as { status: string; data: Record<string, unknown> }
-    if (
-      typeof parsed.status !== "string" ||
-      typeof parsed.data !== "object" ||
-      parsed.data === null
-    ) {
-      return null
-    }
-    return parsed
+    const parsed: unknown = JSON.parse(trimmed)
+    return isFlatResult(parsed) ? parsed : null
   } catch {
     return null
   }
@@ -276,7 +213,7 @@ function validateStep(stepIdx: number, job: string, content: string | null): Ste
       error: `step ${stepIdx + 1}: status != ok: ${JSON.stringify(body)}`,
     }
   }
-  return STEPS[stepIdx].check(body.data, job)
+  return STEPS[stepIdx].check(body, job)
 }
 
 function countCompletedSteps(messages: HistoryMessage[]): {

@@ -43,11 +43,10 @@ agent-terminal press debugger -- Down Enter
 agent-terminal press pager -- PageDown
 ```
 
-Stop a job. Use `--force` only if a graceful stop reports `job_still_running`.
+Stop a job. It automatically escalates from graceful termination when needed.
 
 ```bash
 agent-terminal stop dev-server
-agent-terminal stop dev-server --force
 ```
 
 List jobs in the current project scope.
@@ -70,19 +69,32 @@ Key names: `Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`
 
 ## Output
 
-Every response is JSON. Success:
+Every response is a flat JSON object. Successful start and read responses include their data at the top level:
 
 ```json
-{"status":"ok","data":{...}}
+{"status":"ok","state":"running"}
+{"status":"ok","state":"running","screen":"...","truncated":false}
 ```
 
-Error:
+Send, press, and stop acknowledge only success:
 
 ```json
-{"status":"error","error":{"code":"job_not_found","message":"job \"missing\" was not found","hint":"Run list to see known jobs."}}
+{"status":"ok"}
 ```
 
-The JSON `error.code` and `hint` are authoritative. Nonzero exit codes only mean recovery is needed, not a crash.
+List returns job summaries:
+
+```json
+{"status":"ok","jobs":[{"job":"dev-server","state":"running"}]}
+```
+
+Errors are also flat:
+
+```json
+{"status":"error","code":"job_not_found","message":"job \"missing\" was not found"}
+```
+
+The JSON `code` and `message` are authoritative. Nonzero exit codes only mean recovery is needed, not a crash.
 
 ## Lifecycle
 
@@ -90,17 +102,21 @@ The JSON `error.code` and `hint` are authoritative. Nonzero exit codes only mean
 |---|---|
 | `running` | The job accepts input. |
 | `exited` | The process finished; `exit_code` is present; the screen remains readable until stopped. |
-| `lost` | Persisted ownership no longer maps to a live terminal; stop it to clean up. |
 
 Common recovery codes:
 
 - `job_exists` — read or stop the existing job instead of starting another.
 - `job_not_found` — run `list` and check the project scope.
 - `job_not_running` — read the job before sending more input.
-- `job_still_running` — retry `stop` with `--force` if forced closure is acceptable.
 - `lock_busy` — do useful work and retry once later; do not spin.
+- `delivery_uncertain` — read the job before deciding whether to resend.
+- `zellij_not_found`, `zellij_failed`, `state_io`, `state_corrupt` — resolve the terminal or state-store problem before retrying.
 
 The `screen` field on `read` is a bounded visible snapshot (newest 200 lines, 32 KiB), not a complete log. For complete logs, redirect output inside the job command.
+
+## Scope isolation
+
+An invisible `AGENT_TERMINAL_SCOPE` environment variable isolates each agent's terminal state. The model does not manage it; the plugin sets it for each OpenCode session.
 
 ## Rules
 
@@ -109,7 +125,7 @@ The `screen` field on `read` is a bounded visible snapshot (newest 200 lines, 32
 3. State, not screen activity, determines completion. An unchanged screen does not mean the job is finished.
 4. Use `stop` for cleanup. A successful `stop` is authoritative.
 5. Use `list` only after context loss, cancellation, or when ownership is uncertain.
-6. After `exited` or `lost`, call `stop` to free resources.
+6. After `exited`, call `stop` to free resources.
 
 ## Cancellation
 

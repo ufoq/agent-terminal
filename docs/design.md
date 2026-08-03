@@ -21,7 +21,7 @@ agent-terminal [GLOBAL OPTIONS] start <JOB> [--cwd <PATH>] -- <PROGRAM> [ARG...]
 agent-terminal [GLOBAL OPTIONS] read <JOB>
 agent-terminal [GLOBAL OPTIONS] send <JOB> [--no-submit] -- <TEXT>
 agent-terminal [GLOBAL OPTIONS] press <JOB> -- <KEY>...
-agent-terminal [GLOBAL OPTIONS] stop <JOB> [--force]
+agent-terminal [GLOBAL OPTIONS] stop <JOB>
 agent-terminal [GLOBAL OPTIONS] list
 ```
 
@@ -44,8 +44,8 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | `0` | Successful operation, including an empty list |
-| `1` | `job_*` or `lock_busy`: a valid request that the agent can recover from |
-| `2` | `invalid_input`, `state_*`, or `zellij_*`: request/controller/backend failure |
+| `1` | `job_exists`, `job_not_found`, `job_not_running`, `delivery_uncertain`, or `lock_busy`: a valid request that the agent can recover from |
+| `2` | `invalid_input`, `zellij_not_found`, `zellij_failed`, `state_io`, or `state_corrupt`: request/controller/backend failure |
 
 ## 3. JSON contract
 
@@ -54,13 +54,13 @@ Stdout contains exactly one JSON object plus a newline. Diagnostics go only to s
 Success:
 
 ```json
-{"status":"ok","data":{"job":"dev-server","state":"running"}}
+{"status":"ok","state":"running"}
 ```
 
 Error:
 
 ```json
-{"status":"error","error":{"code":"job_not_found","message":"No job named 'api'.","hint":"Run list to see known jobs."}}
+{"status":"error","code":"job_not_found","message":"No job named 'api'."}
 ```
 
 ### Operation data
@@ -68,58 +68,44 @@ Error:
 `start` returns reconciled state, never an assumed state:
 
 ```json
-{"job":"dev-server","state":"running"}
+{"status":"ok","state":"running"}
 ```
 
 ```json
-{"job":"fast-check","state":"exited","exit_code":7}
-```
-
-```json
-{"job":"vanished-during-start","state":"lost"}
+{"status":"ok","state":"exited","exit_code":7}
 ```
 
 `read` while running:
 
 ```json
-{"job":"dev-server","state":"running","screen_available":true,"screen":"ready on :3000\n","truncated":false}
+{"status":"ok","state":"running","screen":"ready on :3000\n","truncated":false}
 ```
 
 `read` after exit:
 
 ```json
-{"job":"tests","state":"exited","exit_code":1,"screen_available":true,"screen":"2 tests failed\n","truncated":false}
-```
-
-`read` for a lost job has no screen:
-
-```json
-{"job":"server","state":"lost","screen_available":false}
+{"status":"ok","state":"exited","exit_code":1,"screen":"2 tests failed\n","truncated":false}
 ```
 
 Successful text and key dispatch mean only that input was issued after an immediately preceding ownership/running check:
 
 ```json
-{"job":"repl","issued":"text","submitted":true}
+{"status":"ok"}
 ```
+
+`stop` returns a unit acknowledgement:
 
 ```json
-{"job":"debugger","issued":"keys","keys":["Down","Enter"]}
+{"status":"ok"}
 ```
 
-`stop` reports cleanup and the last pre-close screen when capture succeeded:
+`list` returns:
 
 ```json
-{"job":"dev-server","cleaned_up":true,"forced":false,"screen_available":true,"last_screen":"shutting down\n","truncated":false}
+{"status":"ok","jobs":[{"job":"dev-server","state":"running"},{"job":"tests","state":"exited","exit_code":1}]}
 ```
 
-If capture fails during cleanup, `stop` can still succeed with `screen_available:false`; it never silently omits an ambiguously optional screen. `forced=true` means the running-force closure branch was actually used, not merely requested; cleanup of an already exited or lost job returns `forced=false`. `list` returns:
-
-```json
-{"jobs":[{"job":"dev-server","state":"running"},{"job":"tests","state":"exited","exit_code":1}]}
-```
-
-Optional-field rules are fixed: `exit_code` appears only for `exited`; `screen` and `truncated` appear on successful `read` only when `screen_available=true`; `last_screen` and `truncated` appear on `stop` only when `screen_available=true`.
+Optional-field rules are fixed: `exit_code` appears only for `exited`; `screen` is always present on successful `read`; `truncated` indicates whether output exceeded the 200-line or 32 KiB bound.
 
 ## 4. Job semantics
 
@@ -133,13 +119,12 @@ Optional-field rules are fixed: `exit_code` appears only for `exited`; `screen` 
 
 ### States
 
-Only three persisted/live states are exposed:
+Only two persisted/live states are exposed:
 
 | State | Meaning |
 |---|---|
 | `running` | The owned terminal command has not exited |
 | `exited` | The command exited; `exit_code` is present and the pane remains held for capture |
-| `lost` | State records the job, but its owned pane or session disappeared |
 
 There is no public `starting` state because `start` returns only after the pane ID is acquired, state is durable, and live state is reconciled. A fast command may therefore make `start` return `exited` with `exit_code`. There is no separate `failed` state; failure is `exited` with a non-zero `exit_code`. Stopped jobs are removed rather than retained as tombstones.
 
@@ -161,19 +146,18 @@ Job panes are always launched in held-on-exit mode by omitting Zellij's `--close
 - Validate session ownership plus terminal ID, non-plugin type, and the nonce-bearing pane title immediately before sending because Zellij silently succeeds for unknown pane IDs and plugin/terminal numeric IDs can collide.
 - Serialize state lookup and input under the per-project lock.
 - Use bracketed paste for text and `send-keys` for named keys.
-- Success means input was issued after validation, not that the application consumed it.
+- Success means input was issued after validation, not that the application consumed it. If the job disappears between validation and delivery, the CLI returns `delivery_uncertain`; the agent must read the job before deciding whether to resend.
 
 Public key names use one controller-owned grammar, independent of Zellij spelling: `Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `F1` through `F12`, `Ctrl+<ASCII letter>`, and `Alt+<ASCII character>`. The controller validates and translates these names.
 
 ### Stop
 
-- `running`, graceful: send the Ctrl+C terminal key sequence, poll authoritative pane state for up to five seconds, then capture and close only after observed exit.
-- `running`, force: capture what is available as `last_screen`, close the owned pane, and remove the job record after the pane is absent.
-- `exited`: capture the last screen, close the held pane, and remove the record.
-- `lost`: remove stale state and report successful cleanup.
+- Stop sends Ctrl+C, waits up to 5 seconds for the command to exit, then force-closes the pane and removes the job record after the pane is absent. It auto-escalates; the caller does not select a mode.
+- `exited`: close the held pane and remove the record.
+- stale registry entry (pane already gone): reconcile internally to `job_not_found`.
 - unknown name: return `job_not_found`; never silently accept a typo.
 
-The post-close absence check is required because Zellij reports success for an unknown pane ID. It is not generic defensive verification. Graceful success proves observed exit; forced success proves only pane absence and registry cleanup.
+The post-close absence check is required because Zellij reports success for an unknown pane ID. It is not generic defensive verification. Stop auto-escalates: it sends Ctrl+C, waits up to 5 seconds for graceful exit, then force-closes the pane and removes the job record after confirming pane absence.
 
 ## 5. Error codes
 
@@ -183,14 +167,14 @@ Public stable codes:
 |---|---|
 | `job_exists` | Read or stop the existing job; do not start a duplicate |
 | `job_not_found` | List jobs and correct the name |
-| `job_not_running` | Read the exited/lost job; do not send input |
-| `job_still_running` | Retry stop with `force=true` only if forced closure is acceptable |
+| `job_not_running` | Read the exited job; do not send input |
+| `delivery_uncertain` | Read the job before deciding whether to resend (send/press only) |
 | `invalid_input` | Correct the named argument |
 | `lock_busy` | Retry the same operation |
 | `zellij_not_found` | Install Zellij 0.44.3 or later |
-| `zellij_failed` | Preserve concise backend context in `message` |
-| `state_io` | Report the state path in error context |
-| `state_corrupt` | Do not overwrite unreadable state automatically |
+| `zellij_failed` | Report the terminal backend operation failed; detailed backend context stays in logs, never in the public message |
+| `state_io` | Report the state operation failed; the filesystem path (which embeds the scope digest) stays in logs, never in the public message |
+| `state_corrupt` | Do not overwrite unreadable state automatically; do not publish the corrupt file's path |
 
 Error messages are concise and actionable. Rust backtraces, command dumps, pane IDs, and raw Zellij JSON never enter the model response.
 
@@ -202,19 +186,20 @@ State lives under the platform state directory:
 
 ```text
 <state-root>/
-├── bootstrap.lock
-└── projects/<project-digest>/
-    ├── state.json
-    └── state.lock
+└── scopes/<scope-digest>/
+    ├── bootstrap.lock
+    └── projects/<project-digest>/
+        ├── state.json
+        └── state.lock
 ```
 
-The permanent per-project sibling lock is held across each complete read-modify-Zellij-write operation. Its acquisition is non-blocking: contention returns `lock_busy` immediately. A state-root bootstrap lock serializes only Zellij session creation/readiness across projects, avoiding backend startup contention while keeping later job operations independent. Waiting for that lock is included in the same ten-second bootstrap deadline. The empty `bootstrap.lock` file intentionally persists after jobs exit so later processes reuse the same synchronization inode; it contains no job data. Every individual Zellij invocation has a two-second timeout. Interrupted `pending_start` adoption also has a ten-second overall deadline; expiry returns `zellij_failed` while leaving `pending_start` durable for later reconciliation or `stop`. Graceful stop likewise has a ten-second overall deadline including its five-second exit wait, so it monopolizes the project lock only for a bounded interval.
+The permanent per-project sibling lock is held across each complete read-modify-Zellij-write operation. Its acquisition is non-blocking: contention returns `lock_busy` immediately. A per-scope bootstrap lock serializes only Zellij session creation/readiness within that scope, avoiding backend startup contention while keeping later job operations independent. Waiting for that lock is included in the same ten-second bootstrap deadline. The empty `bootstrap.lock` file intentionally persists after jobs exit so later processes reuse the same synchronization inode; it contains no job data. Every individual Zellij invocation has a two-second timeout. Interrupted `pending_start` adoption also has a ten-second overall deadline; expiry returns `zellij_failed` while leaving `pending_start` durable for later reconciliation or `stop`. Graceful stop likewise has a fifteen-second overall deadline including its five-second exit wait, so it monopolizes the project lock only for a bounded interval.
 
 `state.json` is replaced atomically through a same-directory temporary file. It stores project root, ownership nonce, session name, job name, operation nonce, full pane identity, cwd, argv, creation time, and internal mutation phase. Runtime state is derived from Zellij.
 
 State mutations use two internal phases that are never exposed as job states:
 
-- `pending_start` is durable before session/pane creation. Reconciliation adopts only a non-plugin pane whose session, terminal ID, and nonce-bearing title all match. Authoritative disappearance after a pane identity was acquired becomes `lost`. If no pane identity appears by the adoption deadline, return `zellij_failed` and retain `pending_start` for later reconciliation or `stop`.
+- `pending_start` is durable before session/pane creation. Reconciliation adopts only a non-plugin pane whose session, terminal ID, and nonce-bearing title all match. Authoritative disappearance after a pane identity was acquired cleans the record and surfaces `job_not_found`. If no pane identity appears by the adoption deadline, return `zellij_failed` and retain `pending_start` for later reconciliation or `stop`.
 - `pending_remove` is durable before pane closure. Reconciliation retries closure when the owned pane remains. For the last job, the phase stays durable until both the job pane and the owned keeper-only session are absent; session-deletion failure returns `zellij_failed` and preserves the phase. Only then does reconciliation remove the job entry and clear the phase.
 
 This ordering keeps a pane created during an interrupted controller process or cancelled OpenCode call reconcilable by its durable nonce. State is written before the session exists, so missing or corrupt state never authorizes targeting a pre-existing session.
@@ -260,7 +245,7 @@ Rules:
 2. Interactive text: start a prompt or REPL, send literal text with submission, and read the resulting screen.
 3. Named keys: start an interactive program, press named navigation keys, and read the changed screen.
 4. Fast failure: start a command that exits non-zero immediately and read `exited`, exact `exit_code`, and last screen.
-5. Recovery: distinguish duplicate name, unknown name, exited job, and externally lost pane.
+5. Recovery: distinguish duplicate name, unknown name, exited job, and an externally closed pane (reconciles to `job_not_found`).
 6. Isolation: run same-named jobs in two project roots without state/session collision.
 7. Crash recovery: terminate the controller between durable pending state and each Zellij mutation, then prove the next operation adopts or removes exactly the nonce-matched pane.
 
@@ -288,3 +273,19 @@ Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij bin
 - Zellij CLI actions: <https://zellij.dev/documentation/cli-actions.html>
 
 The main borrowed pattern is Claude Code's split between background start, output/state read, and stop. The design adds only the input and recovery operations required for persistent interactive PTY work.
+
+## 12. Cross-agent scoping
+
+The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. The variable is set by the plugin (not the model) and is unique per OpenCode session.
+
+State is stored under a scoped directory tree:
+
+```text
+<state-root>/scopes/<scope-digest>/projects/<project-digest>/
+```
+
+Each scope also gets a private Zellij socket namespace under `<tmp>/agent-terminal-<scope-digest>`. Concurrent agents running in separate OpenCode sessions never see each other's jobs, even when they operate on the same project root. Session identity, pane ownership, and locks are all contained within one scope.
+
+When `AGENT_TERMINAL_SCOPE` is unset, the CLI uses the literal scope `standalone`. This is the default when running the binary directly outside of an OpenCode session.
+
+The model does not manage scoping. It refers to jobs by their names and relies on the plugin to set the scope behind the scenes. The same job name may be used independently in different scopes without collision.

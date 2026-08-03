@@ -2,6 +2,8 @@ use std::{fs, time::Instant};
 
 use serde_json::Value;
 
+use agent_terminal::paths::scope_digest;
+
 use super::{TestResult, project_paths, registry_value};
 use crate::support::cli_harness::{
     CorruptKind, DeterministicHarness, assert_json_error, hold_state_lock, write_corrupt_state,
@@ -47,9 +49,19 @@ fn state_root_that_is_a_file_returns_state_io() -> TestResult {
 }
 
 #[test]
-fn projects_component_that_is_a_file_returns_state_io() -> TestResult {
+fn scoped_projects_component_that_is_a_file_returns_state_io() -> TestResult {
     let harness = DeterministicHarness::new();
-    fs::write(harness.state_dir.join("projects"), b"not a directory")?;
+    let projects_dir = harness
+        .state_dir
+        .join("scopes")
+        .join(scope_digest("standalone"))
+        .join("projects");
+    fs::create_dir_all(
+        projects_dir
+            .parent()
+            .ok_or("scoped projects path has no parent")?,
+    )?;
+    fs::write(projects_dir, b"not a directory")?;
 
     assert_json_error(&harness.run(&["list"]), "state_io", 2);
     Ok(())
@@ -109,7 +121,7 @@ fn unsupported_state_version_is_corrupt() -> TestResult {
     );
     let paths = project_paths(&harness)?;
     let mut registry = registry_value(&harness)?;
-    registry["version"] = Value::from(2);
+    registry["version"] = Value::from(3);
     fs::write(paths.state_file(), serde_json::to_vec(&registry)?)?;
 
     assert_json_error(&harness.run(&["list"]), "state_corrupt", 2);

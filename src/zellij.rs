@@ -65,8 +65,11 @@ pub trait Zellij {
 }
 
 pub fn parse_panes(stdout: &str) -> Result<Vec<PaneSnapshot>, Error> {
-    serde_json::from_str(stdout).map_err(|source| Error::ZellijFailed {
-        message: format!("invalid list-panes JSON: {source}"),
+    serde_json::from_str(stdout).map_err(|source| {
+        tracing::warn!(error = %source, "invalid list-panes JSON from terminal backend");
+        Error::ZellijFailed {
+            message: "terminal backend returned invalid pane data".to_owned(),
+        }
     })
 }
 

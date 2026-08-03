@@ -129,14 +129,20 @@ Public states are deliberately small:
 
 - `running`
 - `exited`, with an optional exit code
-- `lost`, when persisted ownership no longer maps to a live pane
 
 Exited panes are held so their visible screen and exit status remain readable. `stop` closes the
-pane and removes the job. A graceful stop sends the terminal `Ctrl+C` key sequence and waits up to
-five seconds; if the job remains active, retry with `--force`.
+pane and removes the job. Stop sends Ctrl+C, waits up to 5 seconds for the command to exit, then
+force-closes the pane and removes the job. It auto-escalates; no `--force` flag is needed.
 
 Screen reads are ANSI-stripped and bounded to the newest 200 lines and 32 KiB. They represent the
 visible terminal screen, not a canonical stdout/stderr log.
+
+## Cross-agent isolation
+
+Each OpenCode session gets its own invisible scope so concurrent agents never interfere. The plugin
+sets `AGENT_TERMINAL_SCOPE` to a session-unique value; state and Zellij sockets are isolated
+per-scope. The model uses only job names and does not manage scoping. When running the CLI directly
+without a plugin, the scope defaults to `standalone`.
 
 ## End-to-end testing
 

@@ -12,7 +12,7 @@ use crate::{
 impl<Z: Zellij> Controller<Z> {
     pub fn start(
         &self,
-        job: JobName,
+        job: &JobName,
         cwd: Option<PathBuf>,
         command: Vec<String>,
         invocation_dir: &std::path::Path,
@@ -24,15 +24,15 @@ impl<Z: Zellij> Controller<Z> {
         }
         let cwd = canonical_cwd(invocation_dir, cwd)?;
         let (mut locked, mut registry) = self.open()?;
-        if registry.jobs.contains_key(&job) {
-            self.reconcile_job(&mut locked, &mut registry, &job, Deadline::per_call())?;
+        if registry.jobs.contains_key(job) {
+            self.reconcile_job(&mut locked, &mut registry, job, Deadline::per_call())?;
         }
-        if registry.jobs.contains_key(&job) {
+        if registry.jobs.contains_key(job) {
             return Err(Error::JobExists {
                 job: job.to_string(),
             });
         }
-        let pending = PendingStart::for_job(&job, cwd.clone(), command.clone());
+        let pending = PendingStart::for_job(job, cwd.clone(), command.clone());
         registry
             .jobs
             .insert(job.clone(), JobRecord::PendingStart(pending.clone()));
@@ -58,12 +58,11 @@ impl<Z: Zellij> Controller<Z> {
         let pane = self.wait_for_target(&registry, &active, START_DEADLINE)?;
         registry.jobs.insert(job.clone(), JobRecord::Active(active));
         locked.save(&registry)?;
-        let (state, exit_code) = Self::pane_state(pane.as_ref());
-        Ok(StartData {
-            job,
-            state,
-            exit_code,
-        })
+        let pane = pane.ok_or_else(|| Error::PendingStartAbsent {
+            job: job.to_string(),
+        })?;
+        let (state, exit_code) = Self::pane_state(&pane);
+        Ok(StartData { state, exit_code })
     }
 }
 

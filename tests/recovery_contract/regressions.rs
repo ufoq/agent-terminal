@@ -8,7 +8,7 @@ use agent_terminal::{
 
 use crate::{
     fixture::Fixture,
-    support::{AfterPaste, Fault, pane},
+    support::{AfterPaste, Fault, Operation, pane},
 };
 
 #[test]
@@ -20,7 +20,6 @@ fn stale_last_job_flag_does_not_kill_a_new_job() -> Result<(), Box<dyn std::erro
         old,
         JobRecord::PendingRemove(PendingRemove {
             job: fixture.active(&JobName::from_str("old")?, 1),
-            force_authorized: false,
         }),
     );
     fixture
@@ -50,7 +49,6 @@ fn removal_kills_the_session_when_it_is_now_last() -> Result<(), Box<dyn std::er
         job,
         JobRecord::PendingRemove(PendingRemove {
             job: fixture.active(&JobName::from_str("old")?, 1),
-            force_authorized: false,
         }),
     );
     fixture.fake.state()?.session_exists = true;
@@ -78,7 +76,7 @@ fn backend_failure_does_not_discard_pending_start() -> Result<(), Box<dyn std::e
     fixture.fake.state()?.session_lookup = Fault::Fail;
     fixture.save_current()?;
 
-    let result = fixture.controller().stop(job.clone(), false);
+    let result = fixture.controller().stop(&job);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(matches!(
@@ -97,7 +95,6 @@ fn session_deletion_requires_owned_keeper_and_no_foreign_pane()
         job,
         JobRecord::PendingRemove(PendingRemove {
             job: fixture.active(&JobName::from_str("old")?, 1),
-            force_authorized: false,
         }),
     );
     fixture.fake.state()?.session_exists = true;
@@ -112,14 +109,14 @@ fn session_deletion_requires_owned_keeper_and_no_foreign_pane()
 }
 
 #[test]
-fn recovered_force_stop_reports_actual_forced_close() -> Result<(), Box<dyn std::error::Error>> {
+fn recovered_pending_removal_completes_without_force_authorization()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = Fixture::new()?;
     let job = JobName::from_str("old")?;
     fixture.registry.jobs.insert(
         job.clone(),
         JobRecord::PendingRemove(PendingRemove {
             job: fixture.active(&job, 1),
-            force_authorized: true,
         }),
     );
     fixture.fake.state()?.session_exists = true;
@@ -129,9 +126,16 @@ fn recovered_force_stop_reports_actual_forced_close() -> Result<(), Box<dyn std:
     ];
     fixture.save_current()?;
 
-    let stopped = fixture.controller().stop(job, true)?;
+    fixture.controller().stop(&job)?;
 
-    assert!(stopped.forced);
+    assert!(!fixture.reload()?.jobs.contains_key(&job));
+    assert!(
+        fixture
+            .fake
+            .state()?
+            .operations
+            .contains(&Operation::ClosePane)
+    );
     Ok(())
 }
 
@@ -148,7 +152,7 @@ fn submit_revalidates_identity_before_pressing_enter() -> Result<(), Box<dyn std
     ];
     fixture.save_current()?;
 
-    let result = fixture.controller().send(job, "yes", true);
+    let result = fixture.controller().send(&job, "yes", true);
 
     assert!(matches!(result, Err(Error::JobNotRunning { .. })));
     assert!(

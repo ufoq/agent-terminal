@@ -11,34 +11,23 @@ use crate::{
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Ok { data: CommandData },
-    Error { error: ErrorBody },
+    Ok(CommandData),
+    Error { code: &'static str, message: String },
 }
 
 impl Response {
     #[must_use]
     pub const fn ok(data: CommandData) -> Self {
-        Self::Ok { data }
+        Self::Ok(data)
     }
 
     #[must_use]
     pub fn error(error: &Error) -> Self {
         Self::Error {
-            error: ErrorBody {
-                code: error.kind(),
-                message: error.to_string(),
-                hint: error.hint(),
-            },
+            code: error.kind(),
+            message: error.public_message(),
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub code: &'static str,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hint: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,7 +43,6 @@ pub enum CommandData {
 
 #[derive(Debug, Serialize)]
 pub struct StartData {
-    pub job: JobName,
     pub state: JobState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -62,49 +50,21 @@ pub struct StartData {
 
 #[derive(Debug, Serialize)]
 pub struct ReadData {
-    pub job: JobName,
     pub state: JobState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    pub screen_available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub screen: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated: Option<bool>,
+    pub screen: String,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct SendData {
-    pub job: JobName,
-    pub issued: Issued,
-    pub submitted: bool,
-}
+pub struct SendData;
 
 #[derive(Debug, Serialize)]
-pub struct PressData {
-    pub job: JobName,
-    pub issued: Issued,
-    pub keys: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Issued {
-    Text,
-    Keys,
-}
+pub struct PressData;
 
 #[derive(Debug, Serialize)]
-pub struct StopData {
-    pub job: JobName,
-    pub cleaned_up: bool,
-    pub forced: bool,
-    pub screen_available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_screen: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated: Option<bool>,
-}
+pub struct StopData;
 
 #[derive(Debug, Serialize)]
 pub struct JobSummary {

@@ -40,10 +40,8 @@ fn invalid_command_is_one_json_error_on_stdout() -> Result<(), Box<dyn std::erro
         body,
         json!({
             "status": "error",
-            "error": {
-                "code": "invalid_input",
-                "message": body["error"]["message"]
-            }
+            "code": "invalid_input",
+            "message": body["message"]
         })
     );
     assert_eq!(String::from_utf8(output.stdout.clone())?.lines().count(), 1);
@@ -76,7 +74,7 @@ fn empty_list_succeeds_without_starting_zellij() -> Result<(), Box<dyn std::erro
     );
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout)?,
-        json!({"status":"ok","data":{"jobs":[]}})
+        json!({"status":"ok","jobs":[]})
     );
     Ok(())
 }
@@ -96,7 +94,7 @@ fn press_requires_the_argument_separator() -> Result<(), Box<dyn std::error::Err
 
     assert_eq!(without_separator.status.code(), Some(2));
     assert_eq!(
-        serde_json::from_slice::<Value>(&without_separator.stdout)?["error"]["code"],
+        serde_json::from_slice::<Value>(&without_separator.stdout)?["code"],
         "invalid_input"
     );
     assert_ne!(with_separator.status.code(), Some(2));

@@ -102,9 +102,11 @@ fn unexpected_list_sessions_failure_is_typed() -> TestResult {
 
     let result = cli.session_exists(&session, Duration::from_millis(200));
 
+    // The public message must not leak raw backend stderr (which can carry
+    // session/pane identifiers). It is a stable, identity-free description.
     assert!(matches!(
         result,
-        Err(Error::ZellijFailed { message }) if message == "backend unavailable"
+        Err(Error::ZellijFailed { message }) if message == "terminal backend operation failed"
     ));
     Ok(())
 }
@@ -187,7 +189,8 @@ fn list_panes_rejects_malformed_or_incomplete_json() -> TestResult {
 
         assert!(matches!(
             cli.list_panes(&session, Duration::from_millis(200)),
-            Err(Error::ZellijFailed { message }) if message.starts_with("invalid list-panes JSON:")
+            Err(Error::ZellijFailed { message })
+                if message == "terminal backend returned invalid pane data"
         ));
     }
     Ok(())
@@ -200,7 +203,10 @@ fn create_pane_rejects_invalid_id_output() -> TestResult {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let temp = TempDir::new()?;
-    let (cli, _executable) = fake_cli(temp.path(), "printf '%s\\n' 'terminal_7 extra'")?;
+    // The fake backend echoes an identity sentinel in the raw output; the
+    // public error must sanitize it away, not embed it.
+    let (cli, _executable) =
+        fake_cli(temp.path(), "printf '%s\\n' 'terminal_7 extra-owner-nonce'")?;
     let spec = PaneSpec {
         session: SessionName::new("agent-terminal-project-owner".to_owned())?,
         cwd: temp.path().to_path_buf(),
@@ -210,7 +216,7 @@ fn create_pane_rejects_invalid_id_output() -> TestResult {
 
     assert!(matches!(
         cli.create_pane(&spec, Duration::from_millis(200)),
-        Err(Error::InvalidInput { message }) if message.contains("terminal_7 extra")
+        Err(Error::ZellijFailed { message }) if message == "terminal backend returned an invalid pane id"
     ));
     Ok(())
 }
@@ -226,6 +232,7 @@ fn dump_screen_requires_the_output_file() -> Result<(), Box<dyn std::error::Erro
     let cli = ZellijCli::new(
         executable,
         temp.path().join("config.kdl"),
+        temp.path().join("socket"),
         Duration::from_millis(200),
     );
     let target = PaneTarget {
@@ -256,13 +263,14 @@ fn subprocess_deadline_is_enforced() -> Result<(), Box<dyn std::error::Error>> {
     let cli = ZellijCli::new(
         executable,
         temp.path().join("config.kdl"),
+        temp.path().join("socket"),
         Duration::from_millis(20),
     );
     let session = SessionName::new("agent-terminal-project-owner".to_owned())?;
 
     assert!(matches!(
         cli.list_panes(&session, Duration::from_millis(20)),
-        Err(Error::ZellijFailed { .. })
+        Err(Error::ZellijTimeout)
     ));
     Ok(())
 }
@@ -286,6 +294,7 @@ fn exited_parent_does_not_wait_for_descendant_pipe_holders()
     let cli = ZellijCli::new(
         executable,
         temp.path().join("config.kdl"),
+        temp.path().join("socket"),
         Duration::from_millis(100),
     );
     let session = SessionName::new("agent-terminal-project-owner".to_owned())?;
@@ -310,7 +319,7 @@ fn bootstrap_files_are_private_and_owner_marked() -> Result<(), Box<dyn std::err
     let temp = TempDir::new()?;
     let project = temp.path().join("project");
     fs::create_dir_all(&project)?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     write_private_files(&paths, "0123456789abcdef")?;
 
     let config = fs::read_to_string(paths.config_file())?;
@@ -343,6 +352,7 @@ fn fake_cli(parent: &Path, body: &str) -> Result<(ZellijCli, std::path::PathBuf)
     let cli = ZellijCli::new(
         executable.clone(),
         parent.join("config.kdl"),
+        parent.join("socket"),
         Duration::from_secs(2),
     );
     Ok((cli, executable))

@@ -197,7 +197,7 @@ function toolStateFailure(part: unknown): string | undefined {
 
 function expectOkJson(
   output: string | undefined,
-  check: (data: Record<string, unknown>) => Result,
+  check: (body: Record<string, unknown>) => Result,
 ): Result {
   const parsed = parseJsonOutput(output)
   if (parsed === undefined) {
@@ -210,10 +210,7 @@ function expectOkJson(
   if (obj["status"] !== "ok") {
     return { ok: false, error: `expected status ok, got ${JSON.stringify(obj)}` }
   }
-  if (!isRecord(obj["data"])) {
-    return { ok: false, error: `expected data object, got ${JSON.stringify(obj["data"])}` }
-  }
-  return check(obj["data"])
+  return check(obj)
 }
 
 export function verifyE2E(
@@ -311,12 +308,12 @@ export function verifyE2E(
       name: "initial list",
       command: expectedCommands.initialList,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          const jobs = data["jobs"]
+        expectOkJson(output, (body) => {
+          const jobs = body["jobs"]
           if (!Array.isArray(jobs) || jobs.length !== 0) {
             return {
               ok: false,
-              error: `initial list did not return empty jobs: ${JSON.stringify(data)}`,
+              error: `initial list did not return empty jobs: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }
@@ -326,11 +323,11 @@ export function verifyE2E(
       name: "start",
       command: expectedCommands.start,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          if (data["job"] !== jobName || data["state"] !== "running") {
+        expectOkJson(output, (body) => {
+          if (body["state"] !== "running") {
             return {
               ok: false,
-              error: `start did not return running job ${jobName}: ${JSON.stringify(data)}`,
+              error: `start did not return running state: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }
@@ -340,12 +337,12 @@ export function verifyE2E(
       name: "first read (prompt-ready)",
       command: expectedCommands.read,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          const screen = String((data["screen"] as string) ?? (data["last_screen"] as string) ?? "")
-          if (!screen.includes("prompt-ready")) {
+        expectOkJson(output, (body) => {
+          const screen = body["screen"]
+          if (typeof screen !== "string" || !screen.includes("prompt-ready")) {
             return {
               ok: false,
-              error: `first read did not contain prompt-ready: ${JSON.stringify(data)}`,
+              error: `first read did not contain prompt-ready: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }
@@ -354,27 +351,18 @@ export function verifyE2E(
     {
       name: "send",
       command: expectedCommands.send,
-      check: (output: string) =>
-        expectOkJson(output, (data) => {
-          if (data["job"] !== jobName || data["issued"] !== "text" || data["submitted"] !== true) {
-            return {
-              ok: false,
-              error: `send did not return expected result: ${JSON.stringify(data)}`,
-            }
-          }
-          return { ok: true }
-        }),
+      check: (output: string) => expectOkJson(output, () => ({ ok: true })),
     },
     {
       name: "second read (first:hello-e2e)",
       command: expectedCommands.read,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          const screen = String((data["screen"] as string) ?? (data["last_screen"] as string) ?? "")
-          if (!screen.includes("first:hello-e2e")) {
+        expectOkJson(output, (body) => {
+          const screen = body["screen"]
+          if (typeof screen !== "string" || !screen.includes("first:hello-e2e")) {
             return {
               ok: false,
-              error: `second read did not contain first:hello-e2e: ${JSON.stringify(data)}`,
+              error: `second read did not contain first:hello-e2e: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }
@@ -383,31 +371,24 @@ export function verifyE2E(
     {
       name: "press Enter",
       command: expectedCommands.press,
-      check: (output: string) =>
-        expectOkJson(output, (data) => {
-          const keys = data["keys"]
-          if (data["job"] !== jobName || !Array.isArray(keys) || !keys.includes("Enter")) {
-            return { ok: false, error: `press did not return Enter keys: ${JSON.stringify(data)}` }
-          }
-          return { ok: true }
-        }),
+      check: (output: string) => expectOkJson(output, () => ({ ok: true })),
     },
     {
       name: "third read (exited)",
       command: expectedCommands.read,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          if (data["job"] !== jobName || data["state"] !== "exited" || data["exit_code"] !== 0) {
+        expectOkJson(output, (body) => {
+          if (body["state"] !== "exited" || body["exit_code"] !== 0) {
             return {
               ok: false,
-              error: `third read did not return exited/0: ${JSON.stringify(data)}`,
+              error: `third read did not return exited/0: ${JSON.stringify(body)}`,
             }
           }
-          const screen = String((data["screen"] as string) ?? (data["last_screen"] as string) ?? "")
-          if (!screen.includes("second:")) {
+          const screen = body["screen"]
+          if (typeof screen !== "string" || !screen.includes("second:")) {
             return {
               ok: false,
-              error: `third read did not contain second:: ${JSON.stringify(data)}`,
+              error: `third read did not contain second:: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }
@@ -416,27 +397,18 @@ export function verifyE2E(
     {
       name: "stop",
       command: expectedCommands.stop,
-      check: (output: string) =>
-        expectOkJson(output, (data) => {
-          if (data["job"] !== jobName || data["cleaned_up"] !== true) {
-            return {
-              ok: false,
-              error: `stop did not return cleaned_up true: ${JSON.stringify(data)}`,
-            }
-          }
-          return { ok: true }
-        }),
+      check: (output: string) => expectOkJson(output, () => ({ ok: true })),
     },
     {
       name: "final list",
       command: expectedCommands.finalList,
       check: (output: string) =>
-        expectOkJson(output, (data) => {
-          const jobs = data["jobs"]
+        expectOkJson(output, (body) => {
+          const jobs = body["jobs"]
           if (!Array.isArray(jobs) || jobs.length !== 0) {
             return {
               ok: false,
-              error: `final list did not return empty jobs: ${JSON.stringify(data)}`,
+              error: `final list did not return empty jobs: ${JSON.stringify(body)}`,
             }
           }
           return { ok: true }

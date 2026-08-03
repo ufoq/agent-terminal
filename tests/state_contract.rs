@@ -21,8 +21,16 @@ fn create_project(parent: &Path, name: &str) -> Result<std::path::PathBuf, std::
 fn project_paths_isolate_equal_job_names() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
     let state_root = temp.path().join("state");
-    let first = ProjectPaths::new(&create_project(temp.path(), "first")?, Some(&state_root))?;
-    let second = ProjectPaths::new(&create_project(temp.path(), "second")?, Some(&state_root))?;
+    let first = ProjectPaths::new(
+        &create_project(temp.path(), "first")?,
+        Some(&state_root),
+        "standalone",
+    )?;
+    let second = ProjectPaths::new(
+        &create_project(temp.path(), "second")?,
+        Some(&state_root),
+        "standalone",
+    )?;
 
     assert_ne!(first.project_dir(), second.project_dir());
     assert_eq!(first.state_file().file_name(), Some("state.json".as_ref()));
@@ -37,6 +45,7 @@ fn state_lock_fails_fast_when_an_operation_is_active() -> Result<(), Box<dyn std
     let store = StateStore::new(ProjectPaths::new(
         &project,
         Some(&temp.path().join("state")),
+        "standalone",
     )?);
     let first_lock = store.try_lock()?;
 
@@ -53,10 +62,12 @@ fn bootstrap_lock_serializes_different_projects() -> Result<(), Box<dyn std::err
     let first = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "first")?,
         Some(&state_root),
+        "standalone",
     )?);
     let second = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "second")?,
         Some(&state_root),
+        "standalone",
     )?);
 
     let first_lock = first.lock_bootstrap(Duration::from_secs(1))?;
@@ -73,7 +84,7 @@ fn bootstrap_lock_serializes_different_projects() -> Result<(), Box<dyn std::err
 fn registry_round_trips_pending_start_atomically() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     let store = StateStore::new(paths);
     let job = JobName::from_str("api")?;
 
@@ -105,7 +116,7 @@ fn registry_round_trips_pending_start_atomically() -> Result<(), Box<dyn std::er
 fn corrupt_state_is_a_typed_error() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     fs::create_dir_all(paths.project_dir())?;
     fs::write(paths.state_file(), b"not json")?;
     let store = StateStore::new(paths);

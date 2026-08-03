@@ -115,10 +115,6 @@ pub fn assert_json_ok(output: &Output) -> Value {
         Some("ok"),
         "JSON response status was not ok; {context}"
     );
-    assert!(
-        value.get("data").is_some_and(Value::is_object),
-        "JSON response data was missing or not an object; {context}"
-    );
     value
 }
 
@@ -146,13 +142,13 @@ pub fn assert_json_error(output: &Output, expected_code: &str, expected_exit: i3
         "JSON response status was not error; {context}"
     );
     assert_eq!(
-        value.pointer("/error/code").and_then(Value::as_str),
+        value.get("code").and_then(Value::as_str),
         Some(expected_code),
         "unexpected JSON error code; {context}"
     );
     assert!(
         value
-            .pointer("/error/message")
+            .get("message")
             .and_then(Value::as_str)
             .is_some_and(|message| !message.is_empty()),
         "JSON error message was missing or empty; {context}"
@@ -233,7 +229,25 @@ pub fn init_git_project() -> (TempDir, PathBuf, PathBuf) {
 }
 
 fn project_state_dir(harness: &DeterministicHarness) -> PathBuf {
-    let projects_dir = harness.state_dir.join("projects");
+    let scopes_dir = harness.state_dir.join("scopes");
+    let mut scope_dirs = child_directories(&scopes_dir);
+    if scope_dirs.is_empty() {
+        let output = harness.run(&["list"]);
+        assert!(
+            output.status.success(),
+            "could not initialize harness state; {}",
+            output_context(&output)
+        );
+        scope_dirs = child_directories(&scopes_dir);
+    }
+    assert_eq!(
+        scope_dirs.len(),
+        1,
+        "expected exactly one scope state directory under {}",
+        scopes_dir.display()
+    );
+    let scope_path = scope_dirs.pop().unwrap_or(scopes_dir);
+    let projects_dir = scope_path.join("projects");
     let mut project_dirs = child_directories(&projects_dir);
     if project_dirs.is_empty() {
         let output = harness.run(&["list"]);

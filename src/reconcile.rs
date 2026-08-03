@@ -24,7 +24,13 @@ impl<Z: Zellij> Controller<Z> {
                 job: job.to_string(),
             })?;
         match record {
-            JobRecord::Active(_) => Ok(()),
+            JobRecord::Active(active) => {
+                let pane = self.live_pane(registry, &active, deadline)?;
+                if pane.is_some() {
+                    return Ok(());
+                }
+                self.remove_stale(locked, registry, job, deadline)
+            }
             JobRecord::PendingStart(pending) => {
                 let pane = self.adopt_pending(registry, &pending, deadline)?;
                 match (pane, pending.pane_id) {
@@ -50,16 +56,10 @@ impl<Z: Zellij> Controller<Z> {
                     }),
                 }
             }
-            JobRecord::PendingRemove(pending) => self
-                .finish_remove(
-                    locked,
-                    registry,
-                    job,
-                    &pending.job,
-                    pending.force_authorized,
-                    deadline,
-                )
-                .map(|_| ()),
+            JobRecord::PendingRemove(pending) => {
+                self.finish_remove(locked, registry, job, &pending.job, deadline)?;
+                Ok(())
+            }
         }
     }
 
@@ -111,17 +111,10 @@ impl<Z: Zellij> Controller<Z> {
         registry: &mut Registry,
         job: &JobName,
         active: &ActiveJob,
-        force_authorized: bool,
         deadline: Deadline,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let target = Self::target(registry, active);
         let pane = self.live_pane(registry, active, deadline)?;
-        let forced = pane.as_ref().is_some_and(|snapshot| !snapshot.exited);
-        if forced && !force_authorized {
-            return Err(Error::JobStillRunning {
-                job: job.to_string(),
-            });
-        }
         if pane.is_some() {
             if let Err(error) = self
                 .zellij
@@ -144,8 +137,30 @@ impl<Z: Zellij> Controller<Z> {
             self.verify_session_absent(registry, deadline)?;
         }
         registry.jobs.remove(job);
+        locked.save(registry)
+    }
+
+    fn remove_stale(
+        &self,
+        locked: &mut LockedState,
+        registry: &mut Registry,
+        job: &JobName,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        if registry.jobs.len() == 1 && self.session_exists(registry, deadline)? {
+            self.verify_owned_empty_session(registry, deadline)?;
+            if let Err(error) = self.zellij.kill_session(
+                &registry.session,
+                deadline.timeout(self.zellij.command_timeout())?,
+            ) && self.session_exists(registry, deadline)?
+            {
+                return Err(error);
+            }
+            self.verify_session_absent(registry, deadline)?;
+        }
+        registry.jobs.remove(job);
         locked.save(registry)?;
-        Ok(forced)
+        Ok(())
     }
 
     pub(crate) fn delete_owned_empty_session(
@@ -183,11 +198,13 @@ impl<Z: Zellij> Controller<Z> {
         )?;
         let terminals: Vec<_> = panes.iter().filter(|pane| !pane.is_plugin).collect();
         if terminals.len() != 1 || terminals[0].title != expected {
+            tracing::warn!(
+                session = %registry.session,
+                terminal_count = terminals.len(),
+                "refusing to delete session because keeper ownership is not exclusive"
+            );
             return Err(Error::ZellijFailed {
-                message: format!(
-                    "refusing to delete session {} because keeper ownership is not exclusive",
-                    registry.session
-                ),
+                message: "refusing to delete the owned session because its keeper pane ownership is not exclusive".to_owned(),
             });
         }
         Ok(())
@@ -205,8 +222,12 @@ impl<Z: Zellij> Controller<Z> {
                 return Ok(());
             }
             if deadline.timeout(self.zellij.command_timeout()).is_err() {
+                tracing::warn!(
+                    pane_id = active.pane_id.get(),
+                    "owned pane remained after close"
+                );
                 return Err(Error::ZellijFailed {
-                    message: format!("pane {} remained after close", active.pane_id),
+                    message: "owned pane remained after close".to_owned(),
                 });
             }
             thread::sleep(POLL_INTERVAL);
@@ -224,8 +245,9 @@ impl<Z: Zellij> Controller<Z> {
                 return Ok(());
             }
             if deadline.timeout(self.zellij.command_timeout()).is_err() {
+                tracing::warn!(session = %registry.session, "owned session remained after deletion");
                 return Err(Error::ZellijFailed {
-                    message: format!("session {} remained after deletion", registry.session),
+                    message: "owned session remained after deletion".to_owned(),
                 });
             }
             thread::sleep(POLL_INTERVAL);

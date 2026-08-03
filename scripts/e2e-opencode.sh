@@ -211,7 +211,7 @@ Perform this exact 9-step lifecycle using the job name prompt-smoke-__RUN_ID__:
 5. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains first:hello-e2e.
 6. Bash: press Enter with `agent-terminal press prompt-smoke-__RUN_ID__ -- Enter`.
 7. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify the JSON reports state exited with exit_code 0 and its screen contains second:.
-8. Bash: `agent-terminal stop prompt-smoke-__RUN_ID__` and verify the JSON reports cleaned_up true.
+8. Bash: `agent-terminal stop prompt-smoke-__RUN_ID__` and verify the JSON response is the status ok acknowledgement.
 9. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 
 Do not modify repository files. After all nine steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
@@ -259,7 +259,7 @@ run_cli() {
   cat "$stdout_file" | tee -a "$ARTIFACT_DIR/cli-smoke.log"
   JSON_FILE="$stdout_file" bun -e '
     const body = await Bun.file(process.env.JSON_FILE).json()
-    if (body.status !== "ok" || typeof body.data !== "object" || body.data === null) {
+    if (typeof body !== "object" || body === null || Array.isArray(body) || body.status !== "ok") {
       throw new Error(`unexpected agent-terminal response: ${JSON.stringify(body)}`)
     }
   '
@@ -273,7 +273,7 @@ cd "$WORKDIR"
 run_cli list-before list
 JSON_FILE="$LAST_JSON" bun -e '
   const body = await Bun.file(process.env.JSON_FILE).json()
-  if (!Array.isArray(body.data.jobs) || body.data.jobs.length !== 0) {
+  if (!Array.isArray(body.jobs) || body.jobs.length !== 0) {
     throw new Error(`initial list was not empty: ${JSON.stringify(body)}`)
   }
 '
@@ -281,7 +281,7 @@ JSON_FILE="$LAST_JSON" bun -e '
 run_cli start start smoke -- /bin/sh -c 'printf "smoke-ready\n"; trap "exit 0" INT; while :; do sleep 1; done'
 JSON_FILE="$LAST_JSON" bun -e '
   const body = await Bun.file(process.env.JSON_FILE).json()
-  if (body.data.job !== "smoke" || body.data.state !== "running") {
+  if (body.state !== "running") {
     throw new Error(`smoke job did not start: ${JSON.stringify(body)}`)
   }
 '
@@ -289,7 +289,7 @@ JSON_FILE="$LAST_JSON" bun -e '
 run_cli read read smoke
 JSON_FILE="$LAST_JSON" bun -e '
   const body = await Bun.file(process.env.JSON_FILE).json()
-  if (body.data.job !== "smoke" || !["running", "exited"].includes(body.data.state)) {
+  if (!["running", "exited"].includes(body.state) || typeof body.screen !== "string") {
     throw new Error(`smoke job could not be read: ${JSON.stringify(body)}`)
   }
 '
@@ -297,7 +297,7 @@ JSON_FILE="$LAST_JSON" bun -e '
 run_cli stop stop smoke
 JSON_FILE="$LAST_JSON" bun -e '
   const body = await Bun.file(process.env.JSON_FILE).json()
-  if (body.data.job !== "smoke" || body.data.cleaned_up !== true) {
+  if (Object.keys(body).length !== 1) {
     throw new Error(`smoke job was not cleaned up: ${JSON.stringify(body)}`)
   }
 '
@@ -305,7 +305,7 @@ JSON_FILE="$LAST_JSON" bun -e '
 run_cli list-after list
 JSON_FILE="$LAST_JSON" bun -e '
   const body = await Bun.file(process.env.JSON_FILE).json()
-  if (!Array.isArray(body.data.jobs) || body.data.jobs.length !== 0) {
+  if (!Array.isArray(body.jobs) || body.jobs.length !== 0) {
     throw new Error(`final list was not empty: ${JSON.stringify(body)}`)
   }
 '

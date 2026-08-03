@@ -42,10 +42,7 @@ pub fn registries_for_all_phases(project: &Path) -> TestResult<Vec<Registry>> {
     let records = [
         JobRecord::PendingStart(pending),
         JobRecord::Active(active.clone()),
-        JobRecord::PendingRemove(PendingRemove {
-            job: active,
-            force_authorized: true,
-        }),
+        JobRecord::PendingRemove(PendingRemove { job: active }),
     ];
 
     records

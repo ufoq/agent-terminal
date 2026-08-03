@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     config::write_private_files,
-    domain::{BoundedScreen, JobState, bound_screen},
+    domain::{BoundedScreen, JobState, bound_screen, normalize_screen},
     error::Error,
     state::{ActiveJob, LockedState, Registry, StateStore},
     zellij::{PaneSnapshot, PaneTarget, Zellij, find_owned_pane},
@@ -15,7 +15,7 @@ use crate::{
 
 pub(crate) const START_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
-pub(crate) const STOP_DEADLINE: Duration = Duration::from_secs(10);
+pub(crate) const STOP_DEADLINE: Duration = Duration::from_secs(15);
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SCREEN_LINES: usize = 200;
 const SCREEN_BYTES: usize = 32 * 1024;
@@ -184,16 +184,15 @@ impl<Z: Zellij> Controller<Z> {
             source,
         });
         cleanup_dump(&path);
-        let stripped = strip_ansi_escapes::strip(bytes?);
-        let screen = String::from_utf8_lossy(&stripped);
-        Ok(bound_screen(&screen, SCREEN_LINES, SCREEN_BYTES))
+        let normalized = normalize_screen(&String::from_utf8_lossy(&bytes?));
+        Ok(bound_screen(&normalized, SCREEN_LINES, SCREEN_BYTES))
     }
 
-    pub(crate) const fn pane_state(pane: Option<&PaneSnapshot>) -> (JobState, Option<i32>) {
-        match pane {
-            None => (JobState::Lost, None),
-            Some(pane) if pane.exited => (JobState::Exited, pane.exit_status),
-            Some(_) => (JobState::Running, None),
+    pub(crate) const fn pane_state(pane: &PaneSnapshot) -> (JobState, Option<i32>) {
+        if pane.exited {
+            (JobState::Exited, pane.exit_status)
+        } else {
+            (JobState::Running, None)
         }
     }
 

@@ -17,12 +17,14 @@ impl<Z: Zellij> Controller<Z> {
         for (job, record) in &registry.jobs {
             if let JobRecord::Active(active) = record {
                 let pane = self.live_pane(&registry, active, Deadline::per_call())?;
-                let (state, exit_code) = Self::pane_state(pane.as_ref());
-                jobs.push(JobSummary {
-                    job: job.clone(),
-                    state,
-                    exit_code,
-                });
+                if let Some(pane) = pane {
+                    let (state, exit_code) = Self::pane_state(&pane);
+                    jobs.push(JobSummary {
+                        job: job.clone(),
+                        state,
+                        exit_code,
+                    });
+                }
             }
         }
         Ok(ListData { jobs })

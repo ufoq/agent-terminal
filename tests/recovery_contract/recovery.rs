@@ -55,7 +55,7 @@ fn pending_start_with_pane_id_adopts_only_the_exact_identity()
     ];
     fixture.save_current()?;
 
-    let read = fixture.controller().read(job.clone())?;
+    let read = fixture.controller().read(&job)?;
 
     assert_eq!(read.state, JobState::Exited);
     assert!(matches!(
@@ -66,8 +66,7 @@ fn pending_start_with_pane_id_adopts_only_the_exact_identity()
 }
 
 #[test]
-fn persisted_pane_id_recovers_when_snapshot_is_temporarily_absent()
--> Result<(), Box<dyn std::error::Error>> {
+fn stale_pending_start_reconciles_to_job_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = Fixture::new()?;
     let job = JobName::from_str("pending")?;
     fixture.registry.jobs.insert(
@@ -77,13 +76,10 @@ fn persisted_pane_id_recovers_when_snapshot_is_temporarily_absent()
     fixture.fake.state()?.session_exists = false;
     fixture.save_current()?;
 
-    let read = fixture.controller().read(job.clone())?;
+    let result = fixture.controller().read(&job);
 
-    assert_eq!(read.state, JobState::Lost);
-    assert!(matches!(
-        fixture.reload()?.jobs.get(&job),
-        Some(JobRecord::Active(active)) if active.pane_id == TerminalPaneId::new(8)
-    ));
+    assert!(matches!(result, Err(Error::JobNotFound { .. })));
+    assert!(!fixture.reload()?.jobs.contains_key(&job));
     Ok(())
 }
 
@@ -148,10 +144,8 @@ fn stop_cleans_expired_pending_start_without_owned_pane() -> Result<(), Box<dyn 
     fixture.fake.state()?.panes = vec![fixture.keeper()];
     fixture.save_current()?;
 
-    let stopped = fixture.controller().stop(job.clone(), false)?;
+    fixture.controller().stop(&job)?;
 
-    assert!(stopped.cleaned_up);
-    assert!(!stopped.forced);
     assert!(!fixture.reload()?.jobs.contains_key(&job));
     assert_eq!(fixture.fake.state()?.killed_sessions, 1);
     Ok(())
@@ -190,7 +184,7 @@ fn pane_listing_failure_preserves_pending_start() -> Result<(), Box<dyn std::err
     fixture.fake.state()?.pane_listing = Fault::Fail;
     fixture.save_current()?;
 
-    let result = fixture.controller().read(job.clone());
+    let result = fixture.controller().read(&job);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(matches!(
@@ -207,10 +201,9 @@ fn create_background_failure_leaves_recoverable_pending_start()
     let job = JobName::from_str("start")?;
     fixture.fake.state()?.create_background = Fault::Fail;
 
-    let result =
-        fixture
-            .controller()
-            .start(job.clone(), None, vec!["sh".to_owned()], &fixture.project);
+    let result = fixture
+        .controller()
+        .start(&job, None, vec!["sh".to_owned()], &fixture.project);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(matches!(
@@ -230,10 +223,9 @@ fn create_pane_failure_leaves_recoverable_pending_start() -> Result<(), Box<dyn 
     fixture.fake.state()?.create_pane = Fault::Fail;
     fixture.save_current()?;
 
-    let result =
-        fixture
-            .controller()
-            .start(job.clone(), None, vec!["sh".to_owned()], &fixture.project);
+    let result = fixture
+        .controller()
+        .start(&job, None, vec!["sh".to_owned()], &fixture.project);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(matches!(
@@ -251,33 +243,40 @@ fn create_pane_failure_leaves_recoverable_pending_start() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn read_reports_lost_when_owned_session_is_absent() -> Result<(), Box<dyn std::error::Error>> {
+fn read_reconciles_an_absent_owned_session_to_job_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = Fixture::new()?;
     let job = JobName::from_str("read")?;
     fixture.install_active(&job, 1);
     fixture.save_current()?;
 
-    let read = fixture.controller().read(job)?;
+    let result = fixture.controller().read(&job);
 
-    assert_eq!(read.state, JobState::Lost);
-    assert!(!read.screen_available);
-    assert_eq!(read.screen, None);
+    assert!(matches!(result, Err(Error::JobNotFound { .. })));
+    assert!(!fixture.reload()?.jobs.contains_key(&job));
     Ok(())
 }
 
 #[test]
-fn same_pane_id_with_foreign_title_is_lost() -> Result<(), Box<dyn std::error::Error>> {
+fn same_pane_id_with_foreign_title_reconciles_to_job_not_found()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = Fixture::new()?;
     let job = JobName::from_str("read")?;
+    let peer = JobName::from_str("peer")?;
     fixture.install_active(&job, 1);
+    fixture.install_active(&peer, 2);
     fixture.fake.state()?.session_exists = true;
-    fixture.fake.state()?.panes = vec![pane(1, "foreign-pane", false)];
+    fixture.fake.state()?.panes = vec![
+        pane(1, "foreign-pane", false),
+        fixture.owned_pane(&peer, 2, false),
+    ];
     fixture.save_current()?;
 
-    let read = fixture.controller().read(job)?;
+    let result = fixture.controller().read(&job);
 
-    assert_eq!(read.state, JobState::Lost);
-    assert!(!read.screen_available);
+    assert!(matches!(result, Err(Error::JobNotFound { .. })));
+    assert!(!fixture.reload()?.jobs.contains_key(&job));
+    assert!(fixture.reload()?.jobs.contains_key(&peer));
     assert!(
         !fixture
             .fake

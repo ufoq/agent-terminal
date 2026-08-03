@@ -1,24 +1,25 @@
+use std::fs;
+
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::harness::{Harness, session_is_live, socket_guard};
+use super::harness::{Harness, session_is_live};
 
 const INTERACTIVE_READER: &str = "printf 'ready\n'; IFS= read -r line; printf 'accepted=<%s>\n' \"$line\"; while :; do sleep 1; done";
 const LOOP: &str = "while :; do sleep 1; done";
 
 fn screen(body: &Value) -> &str {
-    body["data"]["screen"].as_str().unwrap_or_default()
+    body["screen"].as_str().unwrap_or_default()
 }
 
 #[test]
 fn same_name_when_projects_differ() -> Result<(), Box<dyn std::error::Error>> {
     let shared = TempDir::new()?;
     let state_root = shared.path().join("state");
-    let socket_dir = shared.path().join("socket");
-    let first = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
-    let _guard = socket_guard(&socket_dir);
-    let second = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
+    let first = Harness::with_state_root(Some(&state_root))?;
+    let second = Harness::with_state_root(Some(&state_root))?;
     assert!(first.start("server", "sleep 30")?.status.success());
+    assert_eq!(second.run_ok(&["list"])?["jobs"], serde_json::json!([]));
     assert!(second.start("server", "sleep 30")?.status.success());
 
     let first_sessions = first.sessions();
@@ -26,8 +27,62 @@ fn same_name_when_projects_differ() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(first_sessions.len(), 1);
     assert_eq!(second_sessions.len(), 1);
     assert_ne!(first_sessions, second_sessions);
-    assert!(first.run(&["stop", "server", "--force"])?.status.success());
-    assert!(second.run(&["stop", "server", "--force"])?.status.success());
+    assert!(first.run(&["stop", "server"])?.status.success());
+    assert!(second.run(&["stop", "server"])?.status.success());
+    Ok(())
+}
+
+#[test]
+fn same_project_different_scopes_are_fully_isolated() -> Result<(), Box<dyn std::error::Error>> {
+    let shared = TempDir::new()?;
+    let project = shared.path().join("project");
+    fs::create_dir_all(&project)?;
+    let project = project.canonicalize()?;
+    let state_root = shared.path().join("state");
+    let first = Harness::with_shared(&project, &state_root, "scope-A")?;
+    let second = Harness::with_shared(&project, &state_root, "scope-B")?;
+    assert_ne!(
+        first.socket_dir, second.socket_dir,
+        "distinct scopes must get distinct socket namespaces"
+    );
+
+    first.start_ok("server", INTERACTIVE_READER)?;
+    first.read_until("server", |body| screen(body).contains("ready"))?;
+
+    // Scope B shares the project, state root, and job name but must see nothing.
+    assert_eq!(second.run_ok(&["list"])?["jobs"], serde_json::json!([]));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&second.run(&["read", "server"])?.stdout)?["code"],
+        "job_not_found"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&second.run(&["stop", "server"])?.stdout)?["code"],
+        "job_not_found"
+    );
+
+    // Scope A's server is untouched by scope B's attempts.
+    let first_read = first.read_until("server", |body| {
+        body["state"].as_str() == Some("running") && screen(body).contains("ready")
+    })?;
+    assert_eq!(first_read["state"], "running");
+
+    // Starting the same job name in scope B runs an independent job.
+    second.start_ok("server", "sleep 30")?;
+    let first_read = first.read_until("server", |body| {
+        body["state"].as_str() == Some("running") && screen(body).contains("ready")
+    })?;
+    assert_eq!(first_read["state"], "running");
+    assert_ne!(first.sessions(), second.sessions());
+    assert_eq!(first.sessions().len(), 1);
+    assert_eq!(second.sessions().len(), 1);
+
+    // Stopping scope A's job leaves scope B's independent job running.
+    first.run_ok(&["stop", "server"])?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&second.run(&["read", "server"])?.stdout)?["state"],
+        "running"
+    );
+    second.run_ok(&["stop", "server"])?;
     Ok(())
 }
 
@@ -48,25 +103,23 @@ fn multiple_jobs_share_session() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(harness.sessions().len(), 1);
 
-    let stopped = harness.run(&["stop", "a", "--force"])?;
+    let stopped = harness.run(&["stop", "a"])?;
     let stop_body: Value = serde_json::from_slice(&stopped.stdout)?;
     assert!(stopped.status.success(), "{stop_body}");
-    assert_eq!(stop_body["data"]["cleaned_up"], true);
 
     let read_b = harness.run(&["read", "b"])?;
     let read_b_body: Value = serde_json::from_slice(&read_b.stdout)?;
     assert!(read_b.status.success(), "{read_b_body}");
-    assert_eq!(read_b_body["data"]["state"], "running");
+    assert_eq!(read_b_body["state"], "running");
 
-    let stopped = harness.run(&["stop", "b", "--force"])?;
+    let stopped = harness.run(&["stop", "b"])?;
     let stop_body: Value = serde_json::from_slice(&stopped.stdout)?;
     assert!(stopped.status.success(), "{stop_body}");
-    assert_eq!(stop_body["data"]["cleaned_up"], true);
 
     let listed = harness.run(&["list"])?;
     let list_body: Value = serde_json::from_slice(&listed.stdout)?;
     assert!(listed.status.success(), "{list_body}");
-    assert_eq!(list_body["data"]["jobs"], serde_json::json!([]));
+    assert_eq!(list_body["jobs"], serde_json::json!([]));
     Ok(())
 }
 
@@ -92,8 +145,8 @@ fn input_to_one_job_never_reaches_sibling_pane() -> Result<(), Box<dyn std::erro
     assert!(screen(&second).contains("second-pane-token"));
     assert!(!screen(&second).contains("first-pane-token"));
 
-    harness.run_ok(&["stop", "first-reader", "--force"])?;
-    harness.run_ok(&["stop", "second-reader", "--force"])?;
+    harness.run_ok(&["stop", "first-reader"])?;
+    harness.run_ok(&["stop", "second-reader"])?;
     Ok(())
 }
 
@@ -102,10 +155,8 @@ fn same_named_interactive_jobs_are_isolated_across_projects()
 -> Result<(), Box<dyn std::error::Error>> {
     let shared = TempDir::new()?;
     let state_root = shared.path().join("state");
-    let socket_dir = shared.path().join("socket");
-    let first = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
-    let _guard = socket_guard(&socket_dir);
-    let second = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
+    let first = Harness::with_state_root(Some(&state_root))?;
+    let second = Harness::with_state_root(Some(&state_root))?;
     first.start_ok("reader", INTERACTIVE_READER)?;
     second.start_ok("reader", INTERACTIVE_READER)?;
     first.read_until("reader", |body| screen(body).contains("ready"))?;
@@ -145,8 +196,8 @@ fn same_named_interactive_jobs_are_isolated_across_projects()
     assert!(screen(&second_read).contains("second-project-token"));
     assert!(!screen(&second_read).contains("first-project-token"));
 
-    first.run_ok(&["stop", "reader", "--force"])?;
-    second.run_ok(&["stop", "reader", "--force"])?;
+    first.run_ok(&["stop", "reader"])?;
+    second.run_ok(&["stop", "reader"])?;
     Ok(())
 }
 
@@ -164,10 +215,10 @@ fn many_jobs_share_one_session_and_survive_arbitrary_stop_order()
     let stop_order = ["d", "a", "h", "c", "f", "b", "g", "e"];
 
     for (index, job) in stop_order.iter().enumerate() {
-        harness.run_ok(&["stop", *job, "--force"])?;
+        harness.run_ok(&["stop", *job])?;
         for remaining in &stop_order[index + 1..] {
             let read = harness.run_ok(&["read", *remaining])?;
-            assert_eq!(read["data"]["state"], "running", "job={remaining}");
+            assert_eq!(read["state"], "running", "job={remaining}");
         }
         assert_eq!(
             session_is_live(&harness.socket_dir, session)?,
@@ -193,7 +244,7 @@ fn mixed_running_and_exited_siblings_can_be_cleaned_independently()
         ("exit-b", "exited"),
     ];
     for (job, state) in jobs {
-        harness.read_until(job, |body| body["data"]["state"] == state)?;
+        harness.read_until(job, |body| body["state"] == state)?;
     }
     let sessions = harness.sessions();
     assert_eq!(sessions.len(), 1, "sessions={sessions:?}");
@@ -201,15 +252,14 @@ fn mixed_running_and_exited_siblings_can_be_cleaned_independently()
     let cleanup_order = ["exit-a", "runner-b", "exit-b", "runner-a"];
 
     for (index, job) in cleanup_order.iter().enumerate() {
-        let stopped = harness.run_ok(&["stop", *job, "--force"])?;
-        assert_eq!(stopped["data"]["cleaned_up"], true);
+        harness.run_ok(&["stop", *job])?;
         for (sibling, expected_state) in jobs {
             if cleanup_order[..=index].contains(&sibling) {
                 continue;
             }
             let read = harness.run_ok(&["read", sibling])?;
             assert_eq!(
-                read["data"]["state"], expected_state,
+                read["state"], expected_state,
                 "stopped={job}, sibling={sibling}"
             );
         }

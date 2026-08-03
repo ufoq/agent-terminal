@@ -21,7 +21,7 @@ use super::common::{TestResult, create_project, job};
 fn load_missing_state_returns_unsaved_registry() -> TestResult {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     let state_file = paths.state_file();
     let store = StateStore::new(paths);
     let mut locked = store.try_lock()?;
@@ -39,7 +39,7 @@ fn load_missing_state_returns_unsaved_registry() -> TestResult {
 fn all_job_phases_round_trip_without_field_loss() -> TestResult {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     let store = StateStore::new(paths);
     let mut registry = Registry::new(project.clone())?;
     let pending_job = job("pending")?;
@@ -74,7 +74,6 @@ fn all_job_phases_round_trip_without_field_loss() -> TestResult {
         removing_job,
         JobRecord::PendingRemove(PendingRemove {
             job: ActiveJob::from_pending(removing_pending, TerminalPaneId::new(13)),
-            force_authorized: true,
         }),
     );
 
@@ -93,6 +92,7 @@ fn large_registry_and_command_round_trip() -> TestResult {
     let store = StateStore::new(ProjectPaths::new(
         &project,
         Some(&temp.path().join("state")),
+        "standalone",
     )?);
     let mut registry = Registry::new(project.clone())?;
     let large_argument = "x".repeat(64 * 1024);
@@ -120,7 +120,7 @@ fn large_registry_and_command_round_trip() -> TestResult {
 fn atomic_replacement_never_exposes_partial_json() -> TestResult {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     let state_file = paths.state_file();
     let store = StateStore::new(paths);
     let first = Registry::new(project.clone())?;
@@ -171,6 +171,7 @@ fn state_path_shape_collisions_return_typed_errors() -> TestResult {
     let project_dir_collision = ProjectPaths::new(
         &create_project(temp.path(), "project-dir-collision")?,
         Some(&state_root),
+        "standalone",
     )?;
     let project_parent = project_dir_collision
         .project_dir()
@@ -186,6 +187,7 @@ fn state_path_shape_collisions_return_typed_errors() -> TestResult {
     let lock_collision = ProjectPaths::new(
         &create_project(temp.path(), "lock-collision")?,
         Some(&state_root),
+        "standalone",
     )?;
     fs::create_dir_all(lock_collision.lock_file())?;
     assert!(matches!(
@@ -194,7 +196,8 @@ fn state_path_shape_collisions_return_typed_errors() -> TestResult {
     ));
 
     let state_collision_project = create_project(temp.path(), "state-collision")?;
-    let state_collision = ProjectPaths::new(&state_collision_project, Some(&state_root))?;
+    let state_collision =
+        ProjectPaths::new(&state_collision_project, Some(&state_root), "standalone")?;
     let state_collision_store = StateStore::new(state_collision.clone());
     let mut locked = state_collision_store.try_lock()?;
     fs::create_dir(state_collision.state_file())?;

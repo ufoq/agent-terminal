@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use agent_terminal::paths::{ProjectPaths, find_project_root, project_digest};
+use agent_terminal::paths::{ProjectPaths, find_project_root, project_digest, scope_digest};
 use tempfile::TempDir;
 
 use super::common::{TestResult, create_project};
@@ -28,8 +28,8 @@ fn canonical_path_aliases_share_project_storage() -> TestResult {
     let alias = nested.join("..");
     let state_root = temp.path().join("state");
 
-    let canonical = ProjectPaths::new(&project, Some(&state_root))?;
-    let aliased = ProjectPaths::new(&alias, Some(&state_root))?;
+    let canonical = ProjectPaths::new(&project, Some(&state_root), "standalone")?;
+    let aliased = ProjectPaths::new(&alias, Some(&state_root), "standalone")?;
 
     assert_eq!(canonical.project_root(), aliased.project_root());
     assert_eq!(canonical.project_dir(), aliased.project_dir());
@@ -41,14 +41,25 @@ fn project_path_accessors_stay_under_expected_roots() -> TestResult {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
     let state_root = temp.path().join("state");
-    let paths = ProjectPaths::new(&project, Some(&state_root))?;
+    let paths = ProjectPaths::new(&project, Some(&state_root), "standalone")?;
+    let scope_root = state_root.join("scopes").join(scope_digest("standalone"));
+    let project_dir = scope_root.join("projects").join(project_digest(&project));
 
-    assert!(paths.project_dir().starts_with(state_root.join("projects")));
+    assert_eq!(paths.scope_root(), scope_root);
+    assert_eq!(paths.state_root(), paths.scope_root());
+    assert_eq!(paths.project_dir(), project_dir);
+    assert_eq!(
+        paths.zellij_socket_dir(),
+        std::env::temp_dir().join(format!("agent-terminal-{}", scope_digest("standalone")))
+    );
+    assert_eq!(
+        paths.bootstrap_lock_file(),
+        scope_root.join("bootstrap.lock")
+    );
     assert!(paths.state_file().starts_with(paths.project_dir()));
     assert!(paths.lock_file().starts_with(paths.project_dir()));
     assert!(paths.config_file().starts_with(paths.project_dir()));
     assert!(paths.layout_file().starts_with(paths.project_dir()));
-    assert!(paths.bootstrap_lock_file().starts_with(paths.state_root()));
     Ok(())
 }
 

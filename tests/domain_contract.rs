@@ -10,8 +10,8 @@ use agent_terminal::domain::{
 use agent_terminal::{
     error::Error,
     output::{
-        CommandData, Issued, JobSummary, ListData, PressData, ReadData, Response, SendData,
-        StartData, StopData,
+        CommandData, JobSummary, ListData, PressData, ReadData, Response, SendData, StartData,
+        StopData,
     },
 };
 use serde_json::json;
@@ -69,7 +69,6 @@ fn bounded_screen_keeps_utf8_tail_by_lines_and_bytes() {
 #[test]
 fn start_response_matches_the_frozen_json_contract() -> Result<(), Box<dyn std::error::Error>> {
     let response = Response::ok(CommandData::Start(StartData {
-        job: JobName::from_str("tests")?,
         state: JobState::Exited,
         exit_code: Some(7),
     }));
@@ -78,34 +77,20 @@ fn start_response_matches_the_frozen_json_contract() -> Result<(), Box<dyn std::
         serde_json::to_value(response)?,
         json!({
             "status": "ok",
-            "data": {"job": "tests", "state": "exited", "exit_code": 7}
+            "state": "exited",
+            "exit_code": 7
         })
     );
     Ok(())
 }
 
 #[test]
-fn input_responses_use_public_string_discriminators() -> Result<(), Box<dyn std::error::Error>> {
-    let job = JobName::from_str("repl")?;
-    let send = serde_json::to_value(Response::ok(CommandData::Send(SendData {
-        job: job.clone(),
-        issued: Issued::Text,
-        submitted: true,
-    })))?;
-    let press = serde_json::to_value(Response::ok(CommandData::Press(PressData {
-        job,
-        issued: Issued::Keys,
-        keys: vec!["Ctrl+D".to_owned(), "Alt+!".to_owned()],
-    })))?;
+fn input_responses_are_empty_flat_successes() -> Result<(), Box<dyn std::error::Error>> {
+    let send = serde_json::to_value(Response::ok(CommandData::Send(SendData)))?;
+    let press = serde_json::to_value(Response::ok(CommandData::Press(PressData)))?;
 
-    assert_eq!(
-        send,
-        json!({"status":"ok","data":{"job":"repl","issued":"text","submitted":true}})
-    );
-    assert_eq!(
-        press,
-        json!({"status":"ok","data":{"job":"repl","issued":"keys","keys":["Ctrl+D","Alt+!"]}})
-    );
+    assert_eq!(send, json!({"status":"ok"}));
+    assert_eq!(press, json!({"status":"ok"}));
     Ok(())
 }
 
@@ -447,90 +432,67 @@ fn bounded_screen_applies_line_and_byte_limits_independently() {
 #[test]
 fn start_response_omits_absent_exit_code() -> Result<(), Box<dyn std::error::Error>> {
     let response = Response::ok(CommandData::Start(StartData {
-        job: JobName::from_str("server")?,
         state: JobState::Running,
         exit_code: None,
     }));
 
     assert_eq!(
         serde_json::to_value(response)?,
-        json!({"status":"ok","data":{"job":"server","state":"running"}})
+        json!({"status":"ok","state":"running"})
     );
     Ok(())
 }
 
 #[test]
-fn lost_read_response_omits_screen_optionals() -> Result<(), Box<dyn std::error::Error>> {
+fn exited_read_response_includes_required_screen_fields() -> Result<(), Box<dyn std::error::Error>>
+{
     let response = Response::ok(CommandData::Read(ReadData {
-        job: JobName::from_str("server")?,
-        state: JobState::Lost,
-        exit_code: None,
-        screen_available: false,
-        screen: None,
-        truncated: None,
+        state: JobState::Exited,
+        exit_code: Some(7),
+        screen: "completed\n".to_owned(),
+        truncated: false,
     }));
 
     assert_eq!(
         serde_json::to_value(response)?,
         json!({
             "status":"ok",
-            "data":{"job":"server","state":"lost","screen_available":false}
+            "state":"exited",
+            "exit_code":7,
+            "screen":"completed\n",
+            "truncated":false
         })
     );
     Ok(())
 }
 
 #[test]
-fn empty_available_screen_remains_distinguishable_from_no_screen()
+fn empty_screen_string_remains_present_in_flat_read_response()
 -> Result<(), Box<dyn std::error::Error>> {
     let response = Response::ok(CommandData::Read(ReadData {
-        job: JobName::from_str("server")?,
         state: JobState::Running,
         exit_code: None,
-        screen_available: true,
-        screen: Some(String::new()),
-        truncated: Some(false),
+        screen: String::new(),
+        truncated: false,
     }));
 
     assert_eq!(
         serde_json::to_value(response)?,
         json!({
             "status":"ok",
-            "data":{
-                "job":"server",
-                "state":"running",
-                "screen_available":true,
-                "screen":"",
-                "truncated":false
-            }
+            "state":"running",
+            "screen":"",
+            "truncated":false
         })
     );
     Ok(())
 }
 
 #[test]
-fn stop_response_omits_unavailable_last_screen() -> Result<(), Box<dyn std::error::Error>> {
-    let response = Response::ok(CommandData::Stop(StopData {
-        job: JobName::from_str("server")?,
-        cleaned_up: true,
-        forced: false,
-        screen_available: false,
-        last_screen: None,
-        truncated: None,
-    }));
+fn stop_response_is_an_empty_flat_success() -> Result<(), Box<dyn std::error::Error>> {
+    let response = Response::ok(CommandData::Stop(StopData));
 
-    assert_eq!(
-        serde_json::to_value(response)?,
-        json!({
-            "status":"ok",
-            "data":{
-                "job":"server",
-                "cleaned_up":true,
-                "forced":false,
-                "screen_available":false
-            }
-        })
-    );
+    assert_eq!(serde_json::to_value(response)?, json!({"status":"ok"}));
     Ok(())
 }
 
@@ -548,11 +510,6 @@ fn list_response_serializes_all_public_states() -> Result<(), Box<dyn std::error
                 state: JobState::Exited,
                 exit_code: Some(0),
             },
-            JobSummary {
-                job: JobName::from_str("missing")?,
-                state: JobState::Lost,
-                exit_code: None,
-            },
         ],
     }));
 
@@ -560,14 +517,64 @@ fn list_response_serializes_all_public_states() -> Result<(), Box<dyn std::error
         serde_json::to_value(response)?,
         json!({
             "status":"ok",
-            "data":{
-                "jobs":[
-                    {"job":"active","state":"running"},
-                    {"job":"done","state":"exited","exit_code":0},
-                    {"job":"missing","state":"lost"}
-                ]
-            }
+            "jobs":[
+                {"job":"active","state":"running"},
+                {"job":"done","state":"exited","exit_code":0}
+            ]
         })
     );
     Ok(())
+}
+
+#[test]
+fn public_state_error_messages_never_leak_scope_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret_digest = "secret-agent-terminal-0face-scope-digest";
+    let secret_path = format!("/scopes/{secret_digest}/projects/beef/state.json");
+
+    let state_io = Error::StateIo {
+        action: "read",
+        path: std::path::PathBuf::from(&secret_path),
+        source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+    };
+    let corrupt = Error::StateCorrupt {
+        path: std::path::PathBuf::from(&secret_path),
+        source: serde_json::Error::io(std::io::Error::other("corrupt state sentinel")),
+    };
+    let serialize = Error::StateSerialize {
+        source: serde_json::Error::io(std::io::Error::other(format!(
+            "serialize {secret_digest} sentinel"
+        ))),
+    };
+
+    for error in [&state_io, &corrupt, &serialize] {
+        let message = error.public_message();
+        assert!(
+            !message.contains("secret-agent-terminal-") && !message.contains("/scopes/"),
+            "public_message leaked a scope identity: {message:?}"
+        );
+        let serialized = serde_json::to_value(Response::error(error))?;
+        assert_eq!(serialized["status"], "error");
+        let serialized_message = serialized["message"]
+            .as_str()
+            .ok_or("serialized response is missing a message")?;
+        assert!(
+            !serialized_message.contains("secret-agent-terminal-")
+                && !serialized_message.contains("/scopes/")
+                && !serialized_message.contains(secret_digest),
+            "serialized response leaked a scope identity: {serialized_message:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn public_backend_error_message_is_fixed_and_identity_free() {
+    let error = Error::ZellijFailed {
+        message: "terminal backend returned an invalid pane id".to_owned(),
+    };
+    assert_eq!(
+        error.public_message(),
+        "terminal backend returned an invalid pane id"
+    );
 }

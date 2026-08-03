@@ -23,6 +23,7 @@ fn many_state_lock_contenders_have_one_winner() -> TestResult {
     let store = Arc::new(StateStore::new(ProjectPaths::new(
         &project,
         Some(&temp.path().join("state")),
+        "standalone",
     )?));
     let start = Arc::new(Barrier::new(CONTENDERS + 1));
     let release_winner = Arc::new(Barrier::new(2));
@@ -81,10 +82,12 @@ fn different_project_state_locks_are_independent() -> TestResult {
     let first = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "first")?,
         Some(&state_root),
+        "standalone",
     )?);
     let second = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "second")?,
         Some(&state_root),
+        "standalone",
     )?);
 
     let first_lock = first.try_lock()?;
@@ -100,7 +103,7 @@ fn different_project_state_locks_are_independent() -> TestResult {
 fn private_modes_are_created_or_repaired() -> TestResult {
     let temp = TempDir::new()?;
     let project = create_project(temp.path(), "project")?;
-    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")))?;
+    let paths = ProjectPaths::new(&project, Some(&temp.path().join("state")), "standalone")?;
     let store = StateStore::new(paths.clone());
     let registry = Registry::new(project)?;
 
@@ -170,10 +173,12 @@ fn bootstrap_lock_honors_release_and_timeout_boundaries() -> TestResult {
     let first = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "first")?,
         Some(&state_root),
+        "standalone",
     )?);
     let second = StateStore::new(ProjectPaths::new(
         &create_project(temp.path(), "second")?,
         Some(&state_root),
+        "standalone",
     )?);
     let first_lock = first.lock_bootstrap(Duration::ZERO)?;
 

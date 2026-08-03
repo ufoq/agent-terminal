@@ -43,8 +43,8 @@ const jobName = "prompt-smoke-test"
 const startCommand =
   'agent-terminal start prompt-smoke-test -- /bin/bash -lc \'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"\''
 
-function output(data: Readonly<Record<string, unknown>>): string {
-  return JSON.stringify({ status: "ok", data })
+function output(fields: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify({ status: "ok", ...fields })
 }
 
 function tool(
@@ -73,38 +73,26 @@ function tool(
 function successfulLifecycle(extra: readonly TranscriptEvent[] = []): TranscriptEvent[] {
   return [
     tool("list-1", "agent-terminal list", output({ jobs: [] })),
-    tool("start-1", startCommand, output({ job: jobName, state: "running" })),
+    tool("start-1", startCommand, output({ state: "running" })),
     ...extra,
     tool(
       "read-1",
       "agent-terminal read prompt-smoke-test",
-      output({ job: jobName, state: "running", screen: "prompt-ready" }),
+      output({ state: "running", screen: "prompt-ready", truncated: false }),
     ),
-    tool(
-      "send-1",
-      "agent-terminal send prompt-smoke-test -- hello-e2e",
-      output({ job: jobName, issued: "text", submitted: true }),
-    ),
+    tool("send-1", "agent-terminal send prompt-smoke-test -- hello-e2e", output({})),
     tool(
       "read-2",
       "agent-terminal read prompt-smoke-test",
-      output({ job: jobName, state: "running", screen: "first:hello-e2e" }),
+      output({ state: "running", screen: "first:hello-e2e", truncated: false }),
     ),
-    tool(
-      "press-1",
-      "agent-terminal press prompt-smoke-test -- Enter",
-      output({ job: jobName, issued: "keys", keys: ["Enter"] }),
-    ),
+    tool("press-1", "agent-terminal press prompt-smoke-test -- Enter", output({})),
     tool(
       "read-3",
       "agent-terminal read prompt-smoke-test",
-      output({ job: jobName, state: "exited", exit_code: 0, screen: "second:" }),
+      output({ state: "exited", exit_code: 0, screen: "second:", truncated: false }),
     ),
-    tool(
-      "stop-1",
-      "agent-terminal stop prompt-smoke-test",
-      output({ job: jobName, cleaned_up: true }),
-    ),
+    tool("stop-1", "agent-terminal stop prompt-smoke-test", output({})),
     tool("list-2", "agent-terminal list", output({ jobs: [] })),
     { type: "text", part: { type: "text", text: "E2E_SUCCESS" } },
   ]
@@ -132,7 +120,7 @@ describe("real-model transcript verification", () => {
         tool(
           "read-extra",
           "agent-terminal read prompt-smoke-test",
-          output({ job: jobName, state: "running", screen: "starting" }),
+          output({ state: "running", screen: "starting", truncated: false }),
         ),
       ]),
       "real",
@@ -146,7 +134,7 @@ describe("real-model transcript verification", () => {
       tool(
         `read-extra-${index}`,
         "agent-terminal read prompt-smoke-test",
-        output({ job: jobName, state: "running", screen: "starting" }),
+        output({ state: "running", screen: "starting", truncated: false }),
       ),
     )
     const result = await verifyEvents(successfulLifecycle(extraReads), "real")
@@ -157,13 +145,7 @@ describe("real-model transcript verification", () => {
 
   it("rejects compound agent-terminal mutations", async () => {
     const result = await verifyEvents(
-      [
-        tool(
-          "compound",
-          "agent-terminal stop prompt-smoke-test; agent-terminal list",
-          output({ job: jobName, cleaned_up: true }),
-        ),
-      ],
+      [tool("compound", "agent-terminal stop prompt-smoke-test; agent-terminal list", output({}))],
       "real",
     )
 
@@ -173,9 +155,7 @@ describe("real-model transcript verification", () => {
 
   it("rejects duplicate mutations even in real mode", async () => {
     const result = await verifyEvents(
-      successfulLifecycle([
-        tool("duplicate-start", startCommand, output({ job: jobName, state: "running" })),
-      ]),
+      successfulLifecycle([tool("duplicate-start", startCommand, output({ state: "running" }))]),
       "real",
     )
 
@@ -194,7 +174,7 @@ describe("real-model transcript verification", () => {
           return tool(
             "send-1",
             "agent-terminal send prompt-smoke-test -- hello-e2e",
-            '{"status":"error"}',
+            '{"status":"error","code":"job_not_running","message":"job is not running"}',
           )
         }
         return event

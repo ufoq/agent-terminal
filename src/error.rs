@@ -13,8 +13,8 @@ pub enum Error {
     JobNotFound { job: String },
     #[error("job {job:?} is not running")]
     JobNotRunning { job: String },
-    #[error("job {job:?} is still running")]
-    JobStillRunning { job: String },
+    #[error("read the job before deciding whether to resend")]
+    DeliveryUncertain,
     #[error("pending start for job {job:?} has no owned pane after the adoption deadline")]
     PendingStartAbsent { job: String },
     #[error("another controller operation is in progress")]
@@ -26,6 +26,8 @@ pub enum Error {
     },
     #[error("zellij operation failed: {message}")]
     ZellijFailed { message: String },
+    #[error("zellij operation timed out after the command was dispatched")]
+    ZellijTimeout,
     #[error("state {action} failed at {path}: {source}")]
     StateIo {
         action: &'static str,
@@ -54,10 +56,12 @@ impl Error {
             Self::JobExists { .. } => "job_exists",
             Self::JobNotFound { .. } => "job_not_found",
             Self::JobNotRunning { .. } => "job_not_running",
-            Self::JobStillRunning { .. } => "job_still_running",
+            Self::DeliveryUncertain => "delivery_uncertain",
             Self::LockBusy => "lock_busy",
             Self::ZellijNotFound { .. } => "zellij_not_found",
-            Self::ZellijFailed { .. } | Self::PendingStartAbsent { .. } => "zellij_failed",
+            Self::ZellijFailed { .. } | Self::PendingStartAbsent { .. } | Self::ZellijTimeout => {
+                "zellij_failed"
+            }
             Self::StateIo { .. } | Self::StateSerialize { .. } => "state_io",
             Self::StateCorrupt { .. } => "state_corrupt",
         }
@@ -69,27 +73,31 @@ impl Error {
             Self::JobExists { .. }
             | Self::JobNotFound { .. }
             | Self::JobNotRunning { .. }
-            | Self::JobStillRunning { .. }
+            | Self::DeliveryUncertain
             | Self::LockBusy => 1,
             Self::InvalidInput { .. }
             | Self::PendingStartAbsent { .. }
             | Self::ZellijNotFound { .. }
             | Self::ZellijFailed { .. }
+            | Self::ZellijTimeout
             | Self::StateIo { .. }
             | Self::StateCorrupt { .. }
             | Self::StateSerialize { .. } => 2,
         }
     }
 
+    /// Projects an identity-free message for public (model-visible) output.
+    /// State paths contain the scope digest (`scopes/<digest>/...` and
+    /// `/tmp/agent-terminal-<digest>`), so they must never be published; the
+    /// underlying details remain available through tracing.
     #[must_use]
-    pub const fn hint(&self) -> Option<&'static str> {
+    pub fn public_message(&self) -> String {
         match self {
-            Self::JobNotFound { .. } => Some("Run list to see known jobs."),
-            Self::JobNotRunning { .. } => Some("Read the job before sending input."),
-            Self::JobStillRunning { .. } => Some("Retry stop with --force to close the pane."),
-            Self::LockBusy => Some("Retry after the current controller operation finishes."),
-            Self::ZellijNotFound { .. } => Some("Install Zellij and ensure it is on PATH."),
-            _ => None,
+            Self::StateIo { action, .. } => format!("state operation {action} failed"),
+            Self::StateCorrupt { .. } => "state file is corrupt".to_owned(),
+            Self::StateSerialize { .. } => "state serialization failed".to_owned(),
+            Self::ZellijFailed { message } | Self::InvalidInput { message } => message.clone(),
+            _ => self.to_string(),
         }
     }
 }

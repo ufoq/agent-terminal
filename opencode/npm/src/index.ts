@@ -12,9 +12,13 @@ type ShellEnvOutput = {
   env: Record<string, string | undefined>
 }
 
+type ShellEnvInput = {
+  sessionID: string
+}
+
 export type Hooks = {
   readonly config?: (config: SkillConfig) => void
-  readonly "shell.env"?: (input: unknown, output: ShellEnvOutput) => void
+  readonly "shell.env"?: (input: ShellEnvInput, output: ShellEnvOutput) => void
 }
 
 export type PluginModule = {
@@ -115,12 +119,20 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
       }
       config.skills = { ...skills, paths: [...paths, skillsPath] }
     },
-    "shell.env": (_input, output) => {
+    "shell.env": (input, output) => {
       output.env["PATH"] = computePackagePathEnv(
         packageRoot,
         output.env["PATH"] ?? process.env["PATH"] ?? "",
         bundledZellijMissing,
       )
+      // Fail closed: never collapse into a shared scope. Every Bash call must be
+      // bound to a real OpenCode session; a missing/empty sessionID would make
+      // concurrent agents collide, so reject it rather than guess a scope.
+      const scope = input.sessionID.trim()
+      if (scope === "") {
+        throw new Error("agent-terminal: shell.env requires a non-empty OpenCode sessionID")
+      }
+      output.env["AGENT_TERMINAL_SCOPE"] = scope
     },
   }
 }

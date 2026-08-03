@@ -3,42 +3,82 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{
+        Arc, LazyLock, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
+use agent_terminal::paths::scope_digest;
 use serde_json::Value;
 use tempfile::TempDir;
 
 static SOCKET_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_SCOPE: AtomicUsize = AtomicUsize::new(0);
+static PROCESS_NONCE: LazyLock<String> = LazyLock::new(|| {
+    let bytes = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or_else(|_| 0, |duration| duration.as_nanos())
+        .to_string();
+    format!("{}-{}", std::process::id(), bytes)
+});
 
 pub struct Harness {
     _temp: TempDir,
     pub project: PathBuf,
     pub socket_dir: PathBuf,
+    scope: String,
     state_root: PathBuf,
 }
 
 impl Harness {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_state_root(None, None)
+        Self::with_state_root(None)
     }
 
-    pub fn with_state_root(
-        state_root: Option<&Path>,
-        socket_dir: Option<&Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn with_state_root(state_root: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let temp = TempDir::new()?;
         let project = temp.path().join("project");
-        let socket_dir = socket_dir.map_or_else(|| temp.path().join("socket"), Path::to_path_buf);
+        let scope = format!(
+            "e2e-{}-{}",
+            *PROCESS_NONCE,
+            NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+        );
+        let socket_dir =
+            std::env::temp_dir().join(format!("agent-terminal-{}", scope_digest(&scope)));
         fs::create_dir_all(&project)?;
         fs::create_dir_all(&socket_dir)?;
         Ok(Self {
             project: project.canonicalize()?,
             socket_dir: socket_dir.canonicalize()?,
+            scope,
             state_root: state_root.map_or_else(|| temp.path().join("state"), Path::to_path_buf),
             _temp: temp,
+        })
+    }
+
+    /// Creates a harness sharing an explicit project, state root, and scope with
+    /// other harnesses, so tests can exercise cross-scope isolation on the same
+    /// project and the bootstrap lock across scopes. The provided scope is
+    /// namespaced with this process's nonce so fixed scope names do not collide
+    /// across concurrent test processes or worktrees.
+    pub fn with_shared(
+        project: &Path,
+        state_root: &Path,
+        scope: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let scope = format!("{}-{scope}", *PROCESS_NONCE);
+        let socket_dir =
+            std::env::temp_dir().join(format!("agent-terminal-{}", scope_digest(&scope)));
+        fs::create_dir_all(&socket_dir)?;
+        Ok(Self {
+            project: project.to_path_buf(),
+            socket_dir: socket_dir.canonicalize()?,
+            scope,
+            state_root: state_root.to_path_buf(),
+            _temp: TempDir::new()?,
         })
     }
 
@@ -46,7 +86,7 @@ impl Harness {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("agent-terminal"));
         command
             .current_dir(&self.project)
-            .env("ZELLIJ_SOCKET_DIR", &self.socket_dir)
+            .env("AGENT_TERMINAL_SCOPE", &self.scope)
             .arg("--state-dir")
             .arg(&self.state_root)
             .args(arguments)
@@ -63,7 +103,7 @@ impl Harness {
             let output = self.run(arguments)?;
             let body: Value = serde_json::from_slice(&output.stdout)
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-            if body["error"]["code"] != "lock_busy" || Instant::now() >= deadline {
+            if body["code"] != "lock_busy" || Instant::now() >= deadline {
                 return Ok(output);
             }
             std::thread::yield_now();
@@ -104,7 +144,7 @@ impl Harness {
     }
 
     pub fn sessions(&self) -> Vec<String> {
-        state_sessions(&self.state_root, &self.project)
+        state_sessions(&self.state_root, &self.scope, &self.project)
     }
 
     fn session_name(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -237,12 +277,12 @@ pub fn session_is_live(socket_dir: &Path, session: &str) -> Result<bool, std::io
             .any(|line| line == session))
 }
 
-fn state_sessions(state_root: &Path, project: &Path) -> Vec<String> {
-    let projects = state_root.join("projects");
-    let Ok(entries) = fs::read_dir(projects) else {
+fn state_sessions(state_root: &Path, scope: &str, project: &Path) -> Vec<String> {
+    let scope_dir = state_root.join("scopes").join(scope_digest(scope));
+    let Ok(projects) = fs::read_dir(scope_dir.join("projects")) else {
         return Vec::new();
     };
-    entries
+    projects
         .filter_map(Result::ok)
         .filter_map(|entry| fs::read(entry.path().join("state.json")).ok())
         .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())

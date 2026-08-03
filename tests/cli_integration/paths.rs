@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use agent_terminal::paths::ProjectPaths;
+use agent_terminal::paths::{ProjectPaths, project_digest, scope_digest};
 use serde_json::Value;
 
 use super::TestResult;
@@ -33,7 +33,7 @@ fn state_dir_flag_overrides_env() -> TestResult {
 
     let _listed = assert_json_ok(&harness.run(&["list"]));
 
-    let flag_state = ProjectPaths::new(&harness.project, Some(&harness.state_dir))?;
+    let flag_state = ProjectPaths::new(&harness.project, Some(&harness.state_dir), "standalone")?;
     assert!(flag_state.lock_file().is_file());
     assert!(!env_state.exists());
     Ok(())
@@ -54,9 +54,17 @@ fn state_directory_environment_is_used_without_flag() -> TestResult {
     let output = command.output()?;
 
     let _response = assert_json_ok(&output);
-    let paths = ProjectPaths::new(&harness.project, Some(&env_state))?;
+    let paths = ProjectPaths::new(&harness.project, Some(&env_state), "standalone")?;
     assert!(paths.lock_file().is_file());
-    assert!(!harness.state_dir.join("projects").exists());
+    assert!(
+        !harness
+            .state_dir
+            .join("scopes")
+            .join(scope_digest("standalone"))
+            .join("projects")
+            .join(project_digest(&harness.project))
+            .exists()
+    );
     Ok(())
 }
 
@@ -70,7 +78,7 @@ fn relative_project_path_is_canonicalized() -> TestResult {
 
     assert_json_error(&output, "zellij_not_found", 2);
     let canonical = harness.root.path().join("project").canonicalize()?;
-    let paths = ProjectPaths::new(&canonical, Some(&harness.state_dir))?;
+    let paths = ProjectPaths::new(&canonical, Some(&harness.state_dir), "standalone")?;
     let registry = serde_json::from_slice::<Value>(&fs::read(paths.state_file())?)?;
     assert_eq!(
         registry["project_root"],
@@ -93,7 +101,7 @@ fn project_symlink_uses_the_canonical_scope() -> TestResult {
 
     assert_json_error(&output, "zellij_not_found", 2);
     let canonical = harness.project.canonicalize()?;
-    let paths = ProjectPaths::new(&canonical, Some(&harness.state_dir))?;
+    let paths = ProjectPaths::new(&canonical, Some(&harness.state_dir), "standalone")?;
     let registry = serde_json::from_slice::<Value>(&fs::read(paths.state_file())?)?;
     assert_eq!(
         registry["project_root"],
@@ -113,7 +121,7 @@ fn implicit_git_root_is_used_as_project_scope() -> TestResult {
         "zellij_not_found",
         2,
     );
-    let paths = ProjectPaths::new(&git_root, Some(&harness.state_dir))?;
+    let paths = ProjectPaths::new(&git_root, Some(&harness.state_dir), "standalone")?;
     let registry: Value = serde_json::from_slice(&fs::read(paths.state_file())?)?;
     assert_eq!(
         registry["project_root"],

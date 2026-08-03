@@ -7,7 +7,7 @@ use crate::{
     domain::{JobName, Key},
     error::Error,
     output::CommandData,
-    paths::{ProjectPaths, find_project_root},
+    paths::{ProjectPaths, SCOPE_ENV, find_project_root},
     state::StateStore,
     zellij::ZellijCli,
 };
@@ -74,8 +74,6 @@ pub struct PressArgs {
 #[derive(Debug, Args)]
 pub struct StopArgs {
     pub job: String,
-    #[arg(long)]
-    pub force: bool,
 }
 
 pub fn run(cli: Cli) -> Result<CommandData, Error> {
@@ -88,43 +86,47 @@ pub fn run(cli: Cli) -> Result<CommandData, Error> {
         Some(project) => project,
         None => find_project_root(&invocation_dir)?,
     };
-    let paths = ProjectPaths::new(&project, cli.state_dir.as_deref())?;
+    let scope = std::env::var(SCOPE_ENV).unwrap_or_else(|_| "standalone".to_owned());
+    let paths = ProjectPaths::new(&project, cli.state_dir.as_deref(), &scope)?;
     let store = StateStore::new(paths.clone());
     let zellij = ZellijCli::new(
         PathBuf::from("zellij"),
         paths.config_file(),
+        paths.zellij_socket_dir(),
         Duration::from_secs(2),
     );
     let controller = Controller::new(store, zellij);
 
     match cli.command {
         CliCommand::List => controller.list().map(CommandData::List),
-        CliCommand::Start(args) => controller
-            .start(
-                JobName::from_str(&args.job)?,
-                args.cwd,
-                args.command,
-                &invocation_dir,
-            )
-            .map(CommandData::Start),
-        CliCommand::Read(args) => controller
-            .read(JobName::from_str(&args.job)?)
-            .map(CommandData::Read),
-        CliCommand::Send(args) => controller
-            .send(JobName::from_str(&args.job)?, &args.text, !args.no_submit)
-            .map(CommandData::Send),
+        CliCommand::Start(args) => {
+            let job = JobName::from_str(&args.job)?;
+            controller
+                .start(&job, args.cwd, args.command, &invocation_dir)
+                .map(CommandData::Start)
+        }
+        CliCommand::Read(args) => {
+            let job = JobName::from_str(&args.job)?;
+            controller.read(&job).map(CommandData::Read)
+        }
+        CliCommand::Send(args) => {
+            let job = JobName::from_str(&args.job)?;
+            controller
+                .send(&job, &args.text, !args.no_submit)
+                .map(CommandData::Send)
+        }
         CliCommand::Press(args) => {
+            let job = JobName::from_str(&args.job)?;
             let keys = args
                 .keys
                 .iter()
                 .map(|key| Key::from_str(key))
                 .collect::<Result<Vec<_>, _>>()?;
-            controller
-                .press(JobName::from_str(&args.job)?, &keys)
-                .map(CommandData::Press)
+            controller.press(&job, &keys).map(CommandData::Press)
         }
-        CliCommand::Stop(args) => controller
-            .stop(JobName::from_str(&args.job)?, args.force)
-            .map(CommandData::Stop),
+        CliCommand::Stop(args) => {
+            let job = JobName::from_str(&args.job)?;
+            controller.stop(&job).map(CommandData::Stop)
+        }
     }
 }

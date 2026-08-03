@@ -41,6 +41,10 @@ type ShellEnvOutput = {
   env: Record<string, string | undefined>
 }
 
+type ShellEnvInput = {
+  sessionID: string
+}
+
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T
 }
@@ -111,8 +115,9 @@ describe("npm package contract", () => {
     expect(config.skills?.paths).toEqual([join(slimPackage, "skills")])
 
     const output: ShellEnvOutput = { env: { PATH: "/usr/bin" } }
-    hooks["shell.env"]?.({}, output)
+    hooks["shell.env"]?.({ sessionID: "test-session-a" }, output)
     expect(output.env["PATH"]?.split(":")[0]).toBe(join(slimPackage, "bin", "linux-x64"))
+    expect(output.env["AGENT_TERMINAL_SCOPE"]).toBe("test-session-a")
   })
 
   it("registers the bundled skills path and puts bundled Zellij first for the bundle package", async () => {
@@ -129,9 +134,26 @@ describe("npm package contract", () => {
     expect(config.skills?.paths).toEqual([join(bundlePackage, "skills")])
 
     const output: ShellEnvOutput = { env: { PATH: "/usr/bin" } }
-    hooks["shell.env"]?.({}, output)
+    hooks["shell.env"]?.({ sessionID: "test-session-b" }, output)
     expect(output.env["PATH"]?.split(":")[0]).toBe(join(bundlePackage, "bin", "zellij"))
     expect(output.env["PATH"]?.split(":")[1]).toBe(join(bundlePackage, "bin", "linux-x64"))
+    expect(output.env["AGENT_TERMINAL_SCOPE"]).toBe("test-session-b")
+  })
+
+  it("rejects a missing or empty sessionID to avoid collapsing scopes", async () => {
+    const module = await importSharedModule()
+    const hooks = await module.createServerHooks({
+      arch: "x64",
+      platform: "linux",
+      packageRoot: slimPackage,
+      stderr: () => undefined,
+    })
+
+    const missing = hooks["shell.env"]
+    const empty: ShellEnvInput = { sessionID: "  " }
+    if (!missing) throw new Error("shell.env hook missing")
+    expect(() => missing({ sessionID: "" }, { env: {} })).toThrow(/sessionID/)
+    expect(() => missing(empty, { env: {} })).toThrow(/sessionID/)
   })
 
   it("keeps the agent-terminal binary executable in both packages", () => {

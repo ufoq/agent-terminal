@@ -26,12 +26,13 @@ pub fn find_project_root(start: &Path) -> Result<PathBuf, Error> {
 #[derive(Debug, Clone)]
 pub struct ProjectPaths {
     project_root: PathBuf,
-    state_root: PathBuf,
+    scope_root: PathBuf,
     project_dir: PathBuf,
+    scope_digest: String,
 }
 
 impl ProjectPaths {
-    pub fn new(project_root: &Path, state_root: Option<&Path>) -> Result<Self, Error> {
+    pub fn new(project_root: &Path, state_root: Option<&Path>, scope: &str) -> Result<Self, Error> {
         let project_root = project_root
             .canonicalize()
             .map_err(|source| Error::StateIo {
@@ -55,13 +56,16 @@ impl ProjectPaths {
                     message: "could not determine the operating-system state directory".to_owned(),
                 })?,
         };
-        let project_dir = state_root
+        let scope_digest = scope_digest(scope);
+        let scope_root = state_root.join("scopes").join(&scope_digest);
+        let project_dir = scope_root
             .join("projects")
             .join(project_digest(&project_root));
         Ok(Self {
             project_root,
-            state_root,
+            scope_root,
             project_dir,
+            scope_digest,
         })
     }
 
@@ -77,7 +81,22 @@ impl ProjectPaths {
 
     #[must_use]
     pub fn state_root(&self) -> &Path {
-        &self.state_root
+        &self.scope_root
+    }
+
+    #[must_use]
+    pub fn scope_root(&self) -> &Path {
+        &self.scope_root
+    }
+
+    /// Directory holding this scope's private Zellij socket namespace.
+    ///
+    /// Derived from the scope digest under the OS temp dir so the IPC socket
+    /// path stays well under Zellij's ~107-byte limit; the digest already
+    /// isolates one agent scope from another.
+    #[must_use]
+    pub fn zellij_socket_dir(&self) -> PathBuf {
+        std::env::temp_dir().join(format!("agent-terminal-{}", self.scope_digest))
     }
 
     #[must_use]
@@ -92,7 +111,7 @@ impl ProjectPaths {
 
     #[must_use]
     pub fn bootstrap_lock_file(&self) -> PathBuf {
-        self.state_root.join("bootstrap.lock")
+        self.scope_root.join("bootstrap.lock")
     }
 
     #[must_use]
@@ -109,5 +128,18 @@ impl ProjectPaths {
 #[must_use]
 pub fn project_digest(project_root: &Path) -> String {
     let hash = blake3::hash(project_root.as_os_str().as_encoded_bytes());
+    hash.to_hex()[..24].to_owned()
+}
+
+/// Environment variable that selects the agent scope.
+///
+/// When absent, the CLI uses the stable literal scope `standalone` so direct
+/// users keep persistent state across invocations. `OpenCode` injects a stable
+/// per-session identity (the session id) through this variable.
+pub const SCOPE_ENV: &str = "AGENT_TERMINAL_SCOPE";
+
+#[must_use]
+pub fn scope_digest(scope: &str) -> String {
+    let hash = blake3::hash(&[&b"agent-terminal-scope\0"[..], scope.as_bytes()].concat());
     hash.to_hex()[..24].to_owned()
 }

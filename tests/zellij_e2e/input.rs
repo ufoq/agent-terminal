@@ -6,7 +6,7 @@ const ONE_LINE_READER: &str =
     "printf 'ready\n'; IFS= read -r line; printf 'accepted=<%s>\n' \"$line\"";
 
 fn screen(body: &Value) -> &str {
-    body["data"]["screen"].as_str().unwrap_or_default()
+    body["screen"].as_str().unwrap_or_default()
 }
 
 fn screen_contains(body: &Value, expected: &str) -> bool {
@@ -43,12 +43,12 @@ fn empty_send_is_rejected_without_affecting_running_job() -> Result<(), Box<dyn 
     let rejected = harness.run(&["send", "empty", "--", ""])?;
     let rejected_body: Value = serde_json::from_slice(&rejected.stdout)?;
     assert_eq!(rejected.status.code(), Some(2));
-    assert_eq!(rejected_body["error"]["code"], "invalid_input");
+    assert_eq!(rejected_body["code"], "invalid_input");
 
     let read = harness.run_ok(&["read", "empty"])?;
-    assert_eq!(read["data"]["state"], "running");
+    assert_eq!(read["state"], "running");
     assert!(!screen(&read).contains("accepted=<"));
-    harness.run_ok(&["stop", "empty", "--force"])?;
+    harness.run_ok(&["stop", "empty"])?;
     Ok(())
 }
 
@@ -106,8 +106,8 @@ fn unicode_paste_round_trips_through_pty() -> Result<(), Box<dyn std::error::Err
 
     harness.run_ok(&["send", "unicode", "--", payload])?;
 
-    let read = harness.read_until("unicode", |body| body["data"]["state"] == "exited")?;
-    assert_eq!(read["data"]["exit_code"], 0);
+    let read = harness.read_until("unicode", |body| body["state"] == "exited")?;
+    assert_eq!(read["exit_code"], 0);
     assert!(
         screen(&read).contains(expected),
         "screen={:?}",
@@ -150,7 +150,7 @@ fn large_no_submit_paste_reaches_raw_pty_intact() -> Result<(), Box<dyn std::err
     ])?;
     let sent_body: Value = serde_json::from_slice(&sent.stdout)?;
     assert!(sent.status.success(), "{sent_body}");
-    assert_eq!(sent_body["data"]["submitted"], false);
+    assert_eq!(sent_body["status"], "ok");
 
     let read = harness.read_until("large-paste", |body| screen_contains(body, "bytes=<8192>"))?;
     assert!(screen(&read).contains("bytes=<8192>"));
@@ -180,7 +180,7 @@ fn no_submit_does_not_complete_canonical_read() -> Result<(), Box<dyn std::error
 
     harness.run_ok(&["send", "canonical", "--no-submit", "--", "pending"])?;
     let intermediate = harness.run_ok(&["read", "canonical"])?;
-    assert_eq!(intermediate["data"]["state"], "running");
+    assert_eq!(intermediate["state"], "running");
     assert!(!screen(&intermediate).contains("accepted=<pending>"));
 
     harness.run_ok(&["press", "canonical", "--", "Enter"])?;
@@ -200,9 +200,9 @@ fn ctrl_d_delivers_terminal_eof() -> Result<(), Box<dyn std::error::Error>> {
     harness.run_ok(&["press", "eof", "--", "Ctrl+d"])?;
 
     let read = harness.read_until("eof", |body| {
-        body["data"]["state"] == "exited" && screen_contains(body, "eof-seen")
+        body["state"] == "exited" && screen_contains(body, "eof-seen")
     })?;
-    assert_eq!(read["data"]["exit_code"], 0);
+    assert_eq!(read["exit_code"], 0);
     assert!(screen(&read).contains("eof-seen"));
     Ok(())
 }

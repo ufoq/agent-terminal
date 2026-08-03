@@ -25,17 +25,24 @@ pub(super) struct ProcessOutput {
 pub(super) fn invoke(
     executable: &Path,
     config: &Path,
+    socket_dir: &Path,
     arguments: &[OsString],
     timeout: Duration,
 ) -> Result<ProcessOutput, Error> {
     let parent = config.parent().ok_or_else(|| Error::ZellijFailed {
-        message: format!("config path has no parent: {}", config.display()),
+        message: "terminal configuration path has no parent directory".to_owned(),
     })?;
     fs::create_dir_all(parent).map_err(|source| Error::StateIo {
         action: "create zellij capture directory",
         path: parent.to_path_buf(),
         source,
     })?;
+    fs::create_dir_all(socket_dir).map_err(|source| Error::StateIo {
+        action: "create zellij socket directory",
+        path: socket_dir.to_path_buf(),
+        source,
+    })?;
+    set_private_dir(socket_dir)?;
     let token = Uuid::new_v4().simple().to_string();
     let captures = CapturePaths {
         stdout: parent.join(format!(".{token}.stdout")),
@@ -47,6 +54,7 @@ pub(super) fn invoke(
         .arg("--config")
         .arg(config)
         .args(arguments)
+        .env("ZELLIJ_SOCKET_DIR", socket_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -55,8 +63,9 @@ pub(super) fn invoke(
             if source.kind() == io::ErrorKind::NotFound {
                 Error::ZellijNotFound { source }
             } else {
+                tracing::warn!(error = %source, "could not start zellij");
                 Error::ZellijFailed {
-                    message: format!("could not start zellij: {source}"),
+                    message: "could not start the terminal backend".to_owned(),
                 }
             }
         })?;
@@ -65,15 +74,14 @@ pub(super) fn invoke(
         Ok(None) => {
             let _kill = child.kill();
             let _reap = child.wait();
-            return Err(Error::ZellijFailed {
-                message: format!("command timed out after {} ms", timeout.as_millis()),
-            });
+            return Err(Error::ZellijTimeout);
         }
         Err(source) => {
             let _kill = child.kill();
             let _reap = child.wait();
+            tracing::warn!(error = %source, "waiting for zellij failed");
             return Err(Error::ZellijFailed {
-                message: format!("waiting for zellij failed: {source}"),
+                message: "waiting for the terminal backend failed".to_owned(),
             });
         }
     };
@@ -94,6 +102,25 @@ fn create_private(path: &Path) -> Result<File, Error> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn set_private_dir(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| {
+            Error::StateIo {
+                action: "set zellij socket directory permissions",
+                path: path.to_path_buf(),
+                source,
+            }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 fn read_capture(path: &Path) -> Result<String, Error> {

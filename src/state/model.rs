@@ -14,7 +14,7 @@ use crate::{
     paths::project_digest,
 };
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registry {
@@ -127,7 +127,6 @@ impl ActiveJob {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingRemove {
     pub job: ActiveJob,
-    pub force_authorized: bool,
 }
 
 #[must_use]

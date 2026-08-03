@@ -37,10 +37,10 @@ describe("agent-terminal CLI skill contract", () => {
     expect(skill).toContain("/bin/sh -c")
   })
 
-  test("documents --no-submit and --force flags", async () => {
+  test("documents --no-submit without the removed stop force flag", async () => {
     const skill = await readFile(skillPath, "utf8")
     expect(skill).toContain("--no-submit")
-    expect(skill).toContain("--force")
+    expect(skill).not.toContain("--force")
   })
 
   test("documents project discovery from nearest Git root", async () => {
@@ -51,23 +51,31 @@ describe("agent-terminal CLI skill contract", () => {
 
   test("documents JSON envelope semantics", async () => {
     const skill = await readFile(skillPath, "utf8")
-    for (const term of ["status", "ok", "error", "data", "code", "message", "hint"]) {
+    for (const term of [
+      '{"status":"ok","state":"running"}',
+      '{"status":"ok","state":"running","screen":"...","truncated":false}',
+      '{"status":"ok"}',
+      '{"status":"error","code":"job_not_found","message":',
+    ]) {
       expect(skill).toContain(term)
     }
+    expect(skill).not.toContain('"data":')
+    expect(skill).not.toContain('"error":{')
+    expect(skill).not.toContain('"hint":')
   })
 
   test("documents that JSON error is authoritative", async () => {
     const skill = await readFile(skillPath, "utf8")
-    expect(skill).toContain("error.code")
-    expect(skill).toContain("hint")
+    expect(skill).toContain("`code` and `message`")
     expect(skill).toContain("authoritative")
   })
 
-  test("documents lifecycle states running exited lost", async () => {
+  test("documents lifecycle states running and exited", async () => {
     const skill = await readFile(skillPath, "utf8")
-    for (const state of ["running", "exited", "lost"]) {
+    for (const state of ["running", "exited"]) {
       expect(skill).toContain(state)
     }
+    expect(skill).not.toContain("`lost`")
   })
 
   test("documents recovery codes", async () => {
@@ -76,8 +84,12 @@ describe("agent-terminal CLI skill contract", () => {
       "job_exists",
       "job_not_found",
       "job_not_running",
-      "job_still_running",
       "lock_busy",
+      "delivery_uncertain",
+      "zellij_not_found",
+      "zellij_failed",
+      "state_io",
+      "state_corrupt",
     ]) {
       expect(skill).toContain(code)
     }
@@ -136,13 +148,18 @@ describe("agent-terminal CLI skill contract", () => {
     expect(skill).toContain("safe to retry")
   })
 
+  test("documents plugin-managed per-session scope isolation", async () => {
+    const skill = await readFile(skillPath, "utf8")
+    expect(skill).toContain("AGENT_TERMINAL_SCOPE")
+    expect(skill).toContain("plugin sets it for each OpenCode session")
+  })
+
   test("skill framing stays CLI-first with no legacy wording", async () => {
     const skill = await readFile(skillPath, "utf8")
     const lower = skill.toLowerCase()
     expect(lower).not.toContain("migration")
     expect(lower).not.toContain("adapter")
     expect(lower).not.toContain("tool-based integration")
-    expect(lower).not.toContain("terminal_")
   })
 
   test("explains value over raw Zellij", async () => {

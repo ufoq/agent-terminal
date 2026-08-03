@@ -44,29 +44,38 @@ fn pretty_state_error_preserves_error_semantics() -> TestResult {
 }
 
 #[test]
-fn job_not_found_error_includes_documented_hint() -> TestResult {
+fn job_not_found_error_uses_flat_envelope() -> TestResult {
     let harness = DeterministicHarness::new();
 
     let output = harness.run(&["read", "missing"]);
 
     assert_json_error(&output, "job_not_found", 1);
     let response = serde_json::from_slice::<Value>(&output.stdout)?;
-    assert_eq!(
-        response.pointer("/error/hint").and_then(Value::as_str),
-        Some("Run list to see known jobs.")
+    assert_eq!(response["status"], "error");
+    assert_eq!(response["code"], "job_not_found");
+    assert!(
+        response["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
     );
     Ok(())
 }
 
 #[test]
-fn invalid_input_error_omits_hint() -> TestResult {
+fn invalid_input_error_uses_flat_envelope() -> TestResult {
     let harness = DeterministicHarness::new();
 
     let output = harness.run(&["--unknown", "list"]);
 
     assert_json_error(&output, "invalid_input", 2);
     let response = serde_json::from_slice::<Value>(&output.stdout)?;
-    assert!(response.pointer("/error/hint").is_none());
+    assert_eq!(response["status"], "error");
+    assert_eq!(response["code"], "invalid_input");
+    assert!(
+        response["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+    );
     Ok(())
 }
 

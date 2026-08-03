@@ -16,7 +16,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 fn project_paths(
     harness: &DeterministicHarness,
 ) -> Result<ProjectPaths, agent_terminal::error::Error> {
-    ProjectPaths::new(&harness.project, Some(&harness.state_dir))
+    ProjectPaths::new(&harness.project, Some(&harness.state_dir), "standalone")
 }
 
 fn registry_value(harness: &DeterministicHarness) -> Result<serde_json::Value, Box<dyn Error>> {

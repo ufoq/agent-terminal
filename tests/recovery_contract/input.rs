@@ -25,12 +25,12 @@ fn read_running_pane_returns_screen_and_no_exit_code() -> Result<(), Box<dyn std
     let (fixture, job) = running_fixture("read")?;
     fixture.fake.state()?.screen = b"running\n".to_vec();
 
-    let read = fixture.controller().read(job)?;
+    let read = fixture.controller().read(&job)?;
 
     assert_eq!(read.state, JobState::Running);
     assert_eq!(read.exit_code, None);
-    assert!(read.screen_available);
-    assert_eq!(read.screen.as_deref(), Some("running\n"));
+    assert_eq!(read.screen, "running\n");
+    assert!(!read.truncated);
     Ok(())
 }
 
@@ -41,11 +41,12 @@ fn read_exited_pane_returns_screen_and_exit_status() -> Result<(), Box<dyn std::
     fixture.fake.state()?.panes[0].exit_status = Some(23);
     fixture.fake.state()?.screen = b"done\n".to_vec();
 
-    let read = fixture.controller().read(job)?;
+    let read = fixture.controller().read(&job)?;
 
     assert_eq!(read.state, JobState::Exited);
     assert_eq!(read.exit_code, Some(23));
-    assert_eq!(read.screen.as_deref(), Some("done\n"));
+    assert_eq!(read.screen, "done\n");
+    assert!(!read.truncated);
     Ok(())
 }
 
@@ -55,7 +56,7 @@ fn dump_failure_propagates_from_read_and_removes_temporary_file()
     let (fixture, job) = running_fixture("read")?;
     fixture.fake.state()?.dump = Fault::Fail;
 
-    let result = fixture.controller().read(job);
+    let result = fixture.controller().read(&job);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     let dump_paths = fixture.fake.state()?.dump_paths.clone();
@@ -70,9 +71,10 @@ fn screen_capture_strips_ansi_and_replaces_invalid_utf8() -> Result<(), Box<dyn 
     let (fixture, job) = running_fixture("read")?;
     fixture.fake.state()?.screen = b"\x1b[31mred\x1b[0m:\xff\n".to_vec();
 
-    let read = fixture.controller().read(job)?;
+    let read = fixture.controller().read(&job)?;
 
-    assert_eq!(read.screen.as_deref(), Some("red:\u{fffd}\n"));
+    assert_eq!(read.screen, "red:\u{fffd}\n");
+    assert!(!read.truncated);
     Ok(())
 }
 
@@ -80,12 +82,12 @@ fn screen_capture_strips_ansi_and_replaces_invalid_utf8() -> Result<(), Box<dyn 
 fn send_without_submit_pastes_without_sending_keys() -> Result<(), Box<dyn std::error::Error>> {
     let (fixture, job) = running_fixture("send")?;
 
-    let sent = fixture.controller().send(job, "literal", false)?;
-
-    assert!(!sent.submitted);
+    fixture.controller().send(&job, "literal", false)?;
     assert_eq!(
         fixture.fake.state()?.operations,
         vec![
+            Operation::SessionExists,
+            Operation::ListPanes,
             Operation::SessionExists,
             Operation::ListPanes,
             Operation::Paste("literal".to_owned()),
@@ -99,12 +101,12 @@ fn send_with_submit_orders_paste_revalidation_and_enter() -> Result<(), Box<dyn 
 {
     let (fixture, job) = running_fixture("send")?;
 
-    let sent = fixture.controller().send(job, "literal", true)?;
-
-    assert!(sent.submitted);
+    fixture.controller().send(&job, "literal", true)?;
     assert_eq!(
         fixture.fake.state()?.operations,
         vec![
+            Operation::SessionExists,
+            Operation::ListPanes,
             Operation::SessionExists,
             Operation::ListPanes,
             Operation::Paste("literal".to_owned()),
@@ -121,7 +123,7 @@ fn paste_failure_never_sends_enter() -> Result<(), Box<dyn std::error::Error>> {
     let (fixture, job) = running_fixture("send")?;
     fixture.fake.state()?.paste = Fault::Fail;
 
-    let result = fixture.controller().send(job, "literal", true);
+    let result = fixture.controller().send(&job, "literal", true);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(
@@ -137,12 +139,17 @@ fn paste_failure_never_sends_enter() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn send_revalidates_identity_before_paste() -> Result<(), Box<dyn std::error::Error>> {
-    let (fixture, job) = running_fixture("send")?;
+    let (mut fixture, job) = running_fixture("send")?;
+    let peer = JobName::from_str("peer")?;
+    fixture.install_active(&peer, 2);
+    let peer_pane = fixture.owned_pane(&peer, 2, false);
+    fixture.fake.state()?.panes.push(peer_pane);
     fixture.fake.state()?.panes[0].title = "foreign-pane".to_owned();
+    fixture.save_current()?;
 
-    let result = fixture.controller().send(job, "literal", false);
+    let result = fixture.controller().send(&job, "literal", false);
 
-    assert!(matches!(result, Err(Error::JobNotRunning { .. })));
+    assert!(matches!(result, Err(Error::JobNotFound { .. })));
     assert!(
         !fixture
             .fake
@@ -159,7 +166,7 @@ fn post_paste_lookup_failure_never_sends_enter() -> Result<(), Box<dyn std::erro
     let (fixture, job) = running_fixture("send")?;
     fixture.fake.state()?.after_paste = AfterPaste::FailSessionLookup;
 
-    let result = fixture.controller().send(job, "literal", true);
+    let result = fixture.controller().send(&job, "literal", true);
 
     assert!(matches!(result, Err(Error::ZellijFailed { .. })));
     assert!(
@@ -183,9 +190,7 @@ fn press_maps_public_keys_to_ordered_zellij_tokens() -> Result<(), Box<dyn std::
         Key::from_str("F12")?,
     ];
 
-    let pressed = fixture.controller().press(job, &keys)?;
-
-    assert_eq!(pressed.keys, ["Enter", "Ctrl+C", "Alt+x", "F12"]);
+    fixture.controller().press(&job, &keys)?;
     assert!(
         fixture
             .fake
@@ -207,8 +212,8 @@ fn exited_job_rejects_send_and_press_without_backend_input()
     let (fixture, job) = running_fixture("input")?;
     fixture.fake.state()?.panes[0].exited = true;
 
-    let send_result = fixture.controller().send(job.clone(), "literal", true);
-    let press_result = fixture.controller().press(job, &[Key::from_str("Enter")?]);
+    let send_result = fixture.controller().send(&job, "literal", true);
+    let press_result = fixture.controller().press(&job, &[Key::from_str("Enter")?]);
 
     assert!(matches!(send_result, Err(Error::JobNotRunning { .. })));
     assert!(matches!(press_result, Err(Error::JobNotRunning { .. })));

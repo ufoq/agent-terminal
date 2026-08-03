@@ -11,13 +11,23 @@ use super::harness::{Harness, session_is_live, socket_guard};
 #[test]
 fn concurrent_starts_share_the_bootstrap_lock() -> Result<(), Box<dyn std::error::Error>> {
     let shared = TempDir::new()?;
+    let first_project = shared.path().join("project-first");
+    let second_project = shared.path().join("project-second");
+    std::fs::create_dir_all(&first_project)?;
+    std::fs::create_dir_all(&second_project)?;
+    let first_project = first_project.canonicalize()?;
+    let second_project = second_project.canonicalize()?;
     let state_root = shared.path().join("state");
-    let socket_dir = shared.path().join("socket");
-    let first = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
-    let _guard = socket_guard(&socket_dir);
-    let second = Harness::with_state_root(Some(&state_root), Some(&socket_dir))?;
+    let first = Harness::with_shared(&first_project, &state_root, "bootstrap-scope")?;
+    let _guard = socket_guard(&first.socket_dir);
+    let second = Harness::with_shared(&second_project, &state_root, "bootstrap-scope")?;
+    assert_eq!(first.socket_dir, second.socket_dir);
     let barrier = Barrier::new(3);
 
+    // Both starts use the SAME scope (shared bootstrap lock + socket) but
+    // DIFFERENT projects, so the loser contends on the scope bootstrap lock,
+    // not on a per-project state lock. Both must eventually succeed once the
+    // bootstrap lock is released by the winner.
     let (first_output, second_output) = std::thread::scope(|scope| {
         let first_start = scope.spawn(|| {
             barrier.wait();
@@ -36,10 +46,10 @@ fn concurrent_starts_share_the_bootstrap_lock() -> Result<(), Box<dyn std::error
             .map_err(|_| std::io::Error::other("second start thread panicked"))?;
         Ok::<_, std::io::Error>((first_output?, second_output?))
     })?;
-    assert!(first_output.status.success());
-    assert!(second_output.status.success());
-    first.run_ok(&["stop", "first", "--force"])?;
-    second.run_ok(&["stop", "second", "--force"])?;
+    assert!(first_output.status.success(), "{first_output:?}");
+    assert!(second_output.status.success(), "{second_output:?}");
+    first.run_ok(&["stop", "first"])?;
+    second.run_ok(&["stop", "second"])?;
     Ok(())
 }
 
@@ -97,22 +107,19 @@ fn concurrent_starts_to_same_job_serialize() -> Result<(), Box<dyn std::error::E
     );
     for (output, body) in starts {
         if output.status.success() {
-            assert_eq!(body["data"]["state"], "running");
+            assert_eq!(body["state"], "running");
         } else {
             assert!(
-                matches!(
-                    body["error"]["code"].as_str(),
-                    Some("lock_busy" | "job_exists")
-                ),
+                matches!(body["code"].as_str(), Some("lock_busy" | "job_exists")),
                 "{body}"
             );
         }
     }
 
     let list_body = harness.run_ok(&["list"])?;
-    assert_eq!(list_body["data"]["jobs"].as_array().map(Vec::len), Some(1));
-    assert_eq!(list_body["data"]["jobs"][0]["job"], "race");
-    harness.run_ok(&["stop", "race", "--force"])?;
+    assert_eq!(list_body["jobs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(list_body["jobs"][0]["job"], "race");
+    harness.run_ok(&["stop", "race"])?;
     Ok(())
 }
 
@@ -120,13 +127,13 @@ fn concurrent_starts_to_same_job_serialize() -> Result<(), Box<dyn std::error::E
 fn concurrent_stop_and_read_do_not_corrupt() -> Result<(), Box<dyn std::error::Error>> {
     let harness = Harness::new()?;
     let start_body = harness.start_ok("race", "while :; do sleep 1; done")?;
-    assert_eq!(start_body["data"]["state"], "running");
+    assert_eq!(start_body["state"], "running");
 
     let barrier = Barrier::new(3);
     let (stopped, read_bodies) = std::thread::scope(|scope| {
         let stop = scope.spawn(|| {
             barrier.wait();
-            harness.run_retrying_lock(&["stop", "race", "--force"])
+            harness.run_retrying_lock(&["stop", "race"])
         });
         let read = scope.spawn(|| {
             barrier.wait();
@@ -137,11 +144,8 @@ fn concurrent_stop_and_read_do_not_corrupt() -> Result<(), Box<dyn std::error::E
                 let body: Value = serde_json::from_slice(&output.stdout)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
                 let finished = if output.status.success() {
-                    body["data"]["state"] != "running"
-                } else if matches!(
-                    body["error"]["code"].as_str(),
-                    Some("lock_busy" | "job_not_found")
-                ) {
+                    body["state"] != "running"
+                } else if matches!(body["code"].as_str(), Some("lock_busy" | "job_not_found")) {
                     true
                 } else {
                     return Err(std::io::Error::other(format!(
@@ -172,30 +176,24 @@ fn concurrent_stop_and_read_do_not_corrupt() -> Result<(), Box<dyn std::error::E
     })?;
     let stop_body: Value = serde_json::from_slice(&stopped.stdout)?;
     assert!(stopped.status.success(), "{stop_body}");
-    assert_eq!(stop_body["data"]["cleaned_up"], true);
+    assert_eq!(stop_body["status"], "ok");
     assert!(!read_bodies.is_empty());
     for body in &read_bodies {
         if body["status"] == "ok" {
             assert!(
-                matches!(
-                    body["data"]["state"].as_str(),
-                    Some("running" | "exited" | "lost")
-                ),
+                matches!(body["state"].as_str(), Some("running" | "exited")),
                 "{body}"
             );
         } else {
             assert!(
-                matches!(
-                    body["error"]["code"].as_str(),
-                    Some("lock_busy" | "job_not_found")
-                ),
+                matches!(body["code"].as_str(), Some("lock_busy" | "job_not_found")),
                 "{body}"
             );
         }
     }
 
     let list_body = harness.run_ok(&["list"])?;
-    assert_eq!(list_body["data"]["jobs"], serde_json::json!([]));
+    assert_eq!(list_body["jobs"], serde_json::json!([]));
     Ok(())
 }
 
@@ -211,7 +209,7 @@ fn concurrent_sends_to_same_job_serialize() -> Result<(), Box<dyn std::error::Er
         "printf 'ready\n'; IFS= read -r first; printf 'accepted=<%s>\n' \"$first\"; IFS= read -r second; printf 'accepted=<%s>\n' \"$second\"; while :; do sleep 1; done",
     ])?;
     harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready"))
     })?;
@@ -239,24 +237,24 @@ fn concurrent_sends_to_same_job_serialize() -> Result<(), Box<dyn std::error::Er
     let second_body: Value = serde_json::from_slice(&second_send.stdout)?;
     for (output, body) in [(&first_send, &first_body), (&second_send, &second_body)] {
         if output.status.success() {
-            assert_eq!(body["data"]["submitted"], true);
+            assert_eq!(body["status"], "ok");
         } else {
-            assert_eq!(body["error"]["code"], "job_not_running", "{body}");
+            assert_eq!(body["code"], "delivery_uncertain", "{body}");
         }
     }
 
     let read = harness.read_until("race", |body| {
-        body["data"]["screen"].as_str().is_some_and(|screen| {
+        body["screen"].as_str().is_some_and(|screen| {
             screen.contains("accepted=<thread-A>") && screen.contains("accepted=<thread-B>")
         })
     })?;
-    let Some(screen) = read["data"]["screen"].as_str() else {
+    let Some(screen) = read["screen"].as_str() else {
         return Err("race screen was unavailable after both sends".into());
     };
     assert_eq!(screen.matches("accepted=<thread-A>").count(), 1, "{screen}");
     assert_eq!(screen.matches("accepted=<thread-B>").count(), 1, "{screen}");
     assert_eq!(screen.matches("accepted=<").count(), 2, "{screen}");
-    harness.run_ok(&["stop", "race", "--force"])?;
+    harness.run_ok(&["stop", "race"])?;
     Ok(())
 }
 
@@ -292,24 +290,24 @@ fn concurrent_start_and_read_are_linearizable() -> Result<(), Box<dyn std::error
 
     let start_body: Value = serde_json::from_slice(&start_output.stdout)?;
     assert!(start_output.status.success(), "{start_body}");
-    assert_eq!(start_body["data"]["state"], "running");
+    assert_eq!(start_body["state"], "running");
 
     let read_body: Value = serde_json::from_slice(&read_output.stdout)?;
     if read_output.status.success() {
-        assert_eq!(read_body["data"]["state"], "running", "{read_body}");
+        assert_eq!(read_body["state"], "running", "{read_body}");
     } else {
         assert!(
             matches!(
-                read_body["error"]["code"].as_str(),
+                read_body["code"].as_str(),
                 Some("job_not_found" | "lock_busy")
             ),
             "{read_body}"
         );
     }
 
-    let final_read = harness.read_until("race", |body| body["data"]["state"] == "running")?;
-    assert_eq!(final_read["data"]["state"], "running");
-    harness.run_ok(&["stop", "race", "--force"])?;
+    let final_read = harness.read_until("race", |body| body["state"] == "running")?;
+    assert_eq!(final_read["state"], "running");
+    harness.run_ok(&["stop", "race"])?;
     Ok(())
 }
 
@@ -332,7 +330,7 @@ fn concurrent_start_and_stop_leave_valid_reconcilable_state()
         });
         let stop = scope.spawn(|| {
             barrier.wait();
-            harness.run_retrying_lock(&["stop", "race", "--force"])
+            harness.run_retrying_lock(&["stop", "race"])
         });
         barrier.wait();
         let start_output = start
@@ -345,34 +343,34 @@ fn concurrent_start_and_stop_leave_valid_reconcilable_state()
     })?;
     let start_body: Value = serde_json::from_slice(&start_output.stdout)?;
     assert!(start_output.status.success(), "{start_body}");
-    assert_eq!(start_body["data"]["state"], "running");
+    assert_eq!(start_body["state"], "running");
 
     let stop_body: Value = serde_json::from_slice(&stop_output.stdout)?;
     if stop_output.status.success() {
-        assert_eq!(stop_body["data"]["cleaned_up"], true, "{stop_body}");
+        assert_eq!(stop_body["status"], "ok", "{stop_body}");
     } else {
-        assert_eq!(stop_body["error"]["code"], "job_not_found", "{stop_body}");
+        assert_eq!(stop_body["code"], "job_not_found", "{stop_body}");
     }
 
     let list_body = harness.run_ok(&["list"])?;
-    let jobs = list_body["data"]["jobs"]
+    let jobs = list_body["jobs"]
         .as_array()
         .ok_or("list jobs was not an array")?;
     assert!(jobs.len() <= 1, "{list_body}");
     if let Some(job) = jobs.first() {
         assert_eq!(job["job"], "race", "{list_body}");
         assert_eq!(job["state"], "running", "{list_body}");
-        harness.run_ok(&["stop", "race", "--force"])?;
+        harness.run_ok(&["stop", "race"])?;
     }
     Ok(())
 }
 
 #[test]
-fn concurrent_send_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn std::error::Error>> {
+fn concurrent_send_and_stop_do_not_corrupt_state() -> Result<(), Box<dyn std::error::Error>> {
     let harness = Harness::new()?;
     harness.start_ok("race", "printf 'ready\n'; while :; do sleep 1; done")?;
     harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready"))
     })?;
@@ -385,7 +383,7 @@ fn concurrent_send_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn s
         });
         let stop = scope.spawn(|| {
             barrier.wait();
-            harness.run_retrying_lock(&["stop", "race", "--force"])
+            harness.run_retrying_lock(&["stop", "race"])
         });
         barrier.wait();
         let send_output = send
@@ -399,32 +397,31 @@ fn concurrent_send_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn s
 
     let send_body: Value = serde_json::from_slice(&send_output.stdout)?;
     if send_output.status.success() {
-        assert_eq!(send_body["data"]["submitted"], true, "{send_body}");
+        assert_eq!(send_body["status"], "ok", "{send_body}");
     } else {
         assert!(
             matches!(
-                send_body["error"]["code"].as_str(),
-                Some("job_not_running" | "job_not_found" | "lock_busy")
+                send_body["code"].as_str(),
+                Some("delivery_uncertain" | "job_not_running" | "job_not_found" | "lock_busy")
             ),
             "{send_body}"
         );
     }
     let stop_body: Value = serde_json::from_slice(&stop_output.stdout)?;
     assert!(stop_output.status.success(), "{stop_body}");
-    assert_eq!(stop_body["data"]["cleaned_up"], true);
+    assert_eq!(stop_body["status"], "ok");
 
     let list_body = harness.run_ok(&["list"])?;
-    assert_eq!(list_body["data"]["jobs"], serde_json::json!([]));
+    assert_eq!(list_body["jobs"], serde_json::json!([]));
     Ok(())
 }
 
 #[test]
-fn concurrent_press_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn std::error::Error>>
-{
+fn concurrent_press_and_stop_do_not_corrupt_state() -> Result<(), Box<dyn std::error::Error>> {
     let harness = Harness::new()?;
     harness.start_ok("race", "printf 'ready\n'; while :; do sleep 1; done")?;
     harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready"))
     })?;
@@ -437,7 +434,7 @@ fn concurrent_press_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn 
         });
         let stop = scope.spawn(|| {
             barrier.wait();
-            harness.run_retrying_lock(&["stop", "race", "--force"])
+            harness.run_retrying_lock(&["stop", "race"])
         });
         barrier.wait();
         let press_output = press
@@ -451,22 +448,22 @@ fn concurrent_press_and_force_stop_do_not_corrupt_state() -> Result<(), Box<dyn 
 
     let press_body: Value = serde_json::from_slice(&press_output.stdout)?;
     if press_output.status.success() {
-        assert_eq!(press_body["data"]["keys"][0], "Enter", "{press_body}");
+        assert_eq!(press_body["status"], "ok", "{press_body}");
     } else {
         assert!(
             matches!(
-                press_body["error"]["code"].as_str(),
-                Some("job_not_running" | "job_not_found" | "lock_busy")
+                press_body["code"].as_str(),
+                Some("delivery_uncertain" | "job_not_running" | "job_not_found" | "lock_busy")
             ),
             "{press_body}"
         );
     }
     let stop_body: Value = serde_json::from_slice(&stop_output.stdout)?;
     assert!(stop_output.status.success(), "{stop_body}");
-    assert_eq!(stop_body["data"]["cleaned_up"], true);
+    assert_eq!(stop_body["status"], "ok");
 
     let list_body = harness.run_ok(&["list"])?;
-    assert_eq!(list_body["data"]["jobs"], serde_json::json!([]));
+    assert_eq!(list_body["jobs"], serde_json::json!([]));
     Ok(())
 }
 
@@ -475,7 +472,7 @@ fn concurrent_stops_have_exactly_one_cleanup_winner() -> Result<(), Box<dyn std:
     let harness = Harness::new()?;
     harness.start_ok("race", "printf 'ready\n'; while :; do sleep 1; done")?;
     harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready"))
     })?;
@@ -486,11 +483,11 @@ fn concurrent_stops_have_exactly_one_cleanup_winner() -> Result<(), Box<dyn std:
     let (first_stop, second_stop) = std::thread::scope(|scope| {
         let first = scope.spawn(|| {
             barrier.wait();
-            harness.run(&["stop", "race", "--force"])
+            harness.run(&["stop", "race"])
         });
         let second = scope.spawn(|| {
             barrier.wait();
-            harness.run(&["stop", "race", "--force"])
+            harness.run(&["stop", "race"])
         });
         barrier.wait();
         let first_stop = first
@@ -514,20 +511,17 @@ fn concurrent_stops_have_exactly_one_cleanup_winner() -> Result<(), Box<dyn std:
     );
     for (output, body) in stops {
         if output.status.success() {
-            assert_eq!(body["data"]["cleaned_up"], true, "{body}");
+            assert_eq!(body["status"], "ok", "{body}");
         } else {
             assert!(
-                matches!(
-                    body["error"]["code"].as_str(),
-                    Some("job_not_found" | "lock_busy")
-                ),
+                matches!(body["code"].as_str(), Some("job_not_found" | "lock_busy")),
                 "{body}"
             );
         }
     }
 
     let list_body = harness.run_ok(&["list"])?;
-    assert_eq!(list_body["data"]["jobs"], serde_json::json!([]));
+    assert_eq!(list_body["jobs"], serde_json::json!([]));
     for session in sessions {
         assert!(!session_is_live(&harness.socket_dir, &session)?);
     }
@@ -542,7 +536,7 @@ fn concurrent_no_submit_pastes_are_individually_atomic() -> Result<(), Box<dyn s
         "printf 'ready\n'; IFS= read -r line; printf 'accepted=<%s>\n' \"$line\"",
     )?;
     harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready"))
     })?;
@@ -570,16 +564,16 @@ fn concurrent_no_submit_pastes_are_individually_atomic() -> Result<(), Box<dyn s
     let second_body: Value = serde_json::from_slice(&second_send.stdout)?;
     for (output, body) in [(&first_send, &first_body), (&second_send, &second_body)] {
         assert!(output.status.success(), "{body}");
-        assert_eq!(body["data"]["submitted"], false, "{body}");
+        assert_eq!(body["status"], "ok", "{body}");
     }
 
     harness.run_ok(&["press", "race", "--", "Enter"])?;
     let read = harness.read_until("race", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("accepted=<"))
     })?;
-    let Some(screen) = read["data"]["screen"].as_str() else {
+    let Some(screen) = read["screen"].as_str() else {
         return Err("race screen was unavailable after concurrent pastes".into());
     };
     assert!(
@@ -589,7 +583,7 @@ fn concurrent_no_submit_pastes_are_individually_atomic() -> Result<(), Box<dyn s
         "{screen}"
     );
     assert_eq!(screen.matches("accepted=<").count(), 1, "{screen}");
-    harness.run_ok(&["stop", "race", "--force"])?;
+    harness.run_ok(&["stop", "race"])?;
     Ok(())
 }
 
@@ -597,7 +591,6 @@ fn concurrent_no_submit_pastes_are_individually_atomic() -> Result<(), Box<dyn s
 fn concurrent_sends_to_different_jobs_in_shared_session_are_isolated()
 -> Result<(), Box<dyn std::error::Error>> {
     let harness = Harness::new()?;
-    let _guard = socket_guard(&harness.socket_dir);
     harness.start_ok(
         "a",
         "stty -echo; printf 'ready-a\n'; IFS= read -r line; stty echo; printf 'accepted-a=<%s>\n' \"$line\"; while :; do sleep 1; done",
@@ -607,12 +600,12 @@ fn concurrent_sends_to_different_jobs_in_shared_session_are_isolated()
         "stty -echo; printf 'ready-b\n'; IFS= read -r line; stty echo; printf 'accepted-b=<%s>\n' \"$line\"; while :; do sleep 1; done",
     )?;
     harness.read_until("a", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready-a"))
     })?;
     harness.read_until("b", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("ready-b"))
     })?;
@@ -643,19 +636,19 @@ fn concurrent_sends_to_different_jobs_in_shared_session_are_isolated()
     assert!(send_b.status.success(), "{bravo_response}");
 
     let read_a = harness.read_until("a", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("accepted-a=<TOKEN-A>"))
     })?;
     let read_b = harness.read_until("b", |body| {
-        body["data"]["screen"]
+        body["screen"]
             .as_str()
             .is_some_and(|screen| screen.contains("accepted-b=<TOKEN-B>"))
     })?;
-    let Some(screen_a) = read_a["data"]["screen"].as_str() else {
+    let Some(screen_a) = read_a["screen"].as_str() else {
         return Err("job a screen was unavailable after send".into());
     };
-    let Some(screen_b) = read_b["data"]["screen"].as_str() else {
+    let Some(screen_b) = read_b["screen"].as_str() else {
         return Err("job b screen was unavailable after send".into());
     };
     assert_eq!(screen_a.matches("TOKEN-A").count(), 1, "{screen_a}");
@@ -663,7 +656,7 @@ fn concurrent_sends_to_different_jobs_in_shared_session_are_isolated()
     assert_eq!(screen_b.matches("TOKEN-B").count(), 1, "{screen_b}");
     assert_eq!(screen_b.matches("TOKEN-A").count(), 0, "{screen_b}");
 
-    harness.run_ok(&["stop", "a", "--force"])?;
-    harness.run_ok(&["stop", "b", "--force"])?;
+    harness.run_ok(&["stop", "a"])?;
+    harness.run_ok(&["stop", "b"])?;
     Ok(())
 }
