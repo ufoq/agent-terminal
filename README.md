@@ -148,7 +148,7 @@ without a plugin, the scope defaults to `standalone`.
 
 `scripts/e2e-opencode-local.sh` is a fully automated, deterministic release gate. It runs as the
 invoking user (no root or separate Unix account), starts a local OpenAI-compatible **fixture**
-server that drives the 9-step agent-terminal lifecycle deterministically, installs the locally
+server that drives the 10-step agent-terminal lifecycle deterministically, installs the locally
 built bundle plugin into an isolated OpenCode config, and exercises a real Zellij server
 end-to-end via `opencode run`.
 
@@ -163,9 +163,11 @@ The gate depends on the packaged plugin, not on manual setup:
 
 - The plugin's `config` hook must register the bundled skill — the harness asserts
   `opencode debug skill` lists `agent-terminal` before running the prompt phase.
-- The plugin's `shell.env` hook must expose the binaries — the prompt phase runs with a PATH
-  that excludes the bundled directories, so `agent-terminal` and Zellij resolve only through
-  the plugin hook. If either hook breaks, the gate fails.
+- The plugin's `shell.env` hook must inject the per-session scope — the prompt phase's first
+  Bash call is `printenv AGENT_TERMINAL_SCOPE`, and the verifier requires its printed value to
+  exactly equal the transcript's OpenCode `sessionID`. The bundled binaries resolve on Bash
+  `PATH` (factory-time PATH mutation exposes them even if `shell.env` never fired, so scope
+  injection is what the probe actually guards). If either hook breaks, the gate fails.
 
 ```bash
 bash scripts/e2e-opencode-local.sh
@@ -180,8 +182,8 @@ What it does in one call:
    (`/tmp/e2e-test-repository.XXXXXX/.opencode/`).
 5. Runs the shared lifecycle harness: `bun test`, direct CLI smoke, and the fixture-driven
    `opencode run` prompt phase.
-6. Verifies the transcript with the strict verifier (9 ordered Bash `tool_use` events with
-   matching JSON payloads, no error events, no extraneous activity) and cleans up.
+6. Verifies the transcript with the strict verifier (1 scope-probe + 9 ordered Bash `tool_use`
+   events with matching JSON payloads, no error events, no extraneous activity) and cleans up.
 
 Run from `opencode/` with Bun:
 
@@ -210,7 +212,7 @@ Environment variables:
   `x86_64-unknown-linux-musl` release binary.
 - `AGENT_TERMINAL_HOST_PATH` — PATH used for the `opencode run` prompt phase; defaults to the
   invoking PATH. The fixture wrapper sets this to the original PATH (without the bundled
-  binaries) so the plugin's `shell.env` hook is the only binary source.
+  binaries). The scope probe (not PATH) proves the `shell.env` hook fired.
 - `AGENT_TERMINAL_CLEANUP` — set to `1` to delete the sandbox after the run.
 
 By default the fixture wrapper removes temporary directories. Set

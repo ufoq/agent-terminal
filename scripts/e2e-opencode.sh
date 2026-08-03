@@ -201,9 +201,10 @@ Execution contract:
 - Wait for the real Bash command's JSON output, inspect it, and then emit the next Bash tool call. Do not predict or invent command output.
 - You must NOT call the read, write, task, or any other non-Bash tool for any purpose. The word "read" below always means the Bash command `agent-terminal read`, never the read tool.
 - You must NOT delegate to a subagent, create files, or emit simulated/agent-terminal commands inside Markdown or YAML blocks.
-- If any step fails, stop and report the failure; only end with E2E_SUCCESS after step 9 passes.
+- If any step fails, stop and report the failure; only end with E2E_SUCCESS after step 10 passes.
 
-Perform this exact 9-step lifecycle using the job name prompt-smoke-__RUN_ID__:
+Perform this exact 10-step lifecycle using the job name prompt-smoke-__RUN_ID__:
+0. Bash: run `printenv AGENT_TERMINAL_SCOPE` and confirm it prints the current OpenCode session id (non-empty). This verifies the plugin injected the per-session scope.
 1. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 2. Bash: start the interactive job with `agent-terminal start prompt-smoke-__RUN_ID__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
 3. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
@@ -214,7 +215,7 @@ Perform this exact 9-step lifecycle using the job name prompt-smoke-__RUN_ID__:
 8. Bash: `agent-terminal stop prompt-smoke-__RUN_ID__` and verify the JSON response is the status ok acknowledgement.
 9. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 
-Do not modify repository files. After all nine steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
+Do not modify repository files. After all ten steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
 PROMPT_EOF
 
 readonly INNER_SCRIPT="$SANDBOX/run-e2e-inner.sh"

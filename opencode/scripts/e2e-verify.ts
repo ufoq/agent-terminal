@@ -331,27 +331,28 @@ export function verifyE2E(
   }
 
   // The scope probe must be present and, in strict mode, its printed value must
-  // exactly match the transcript's OpenCode session id. This is the assertion
-  // that the plugin actually injected the per-session scope (not "standalone").
+  // The scope probe must be present, and its printed value must exactly match
+  // the transcript's OpenCode session id in BOTH modes. The session id and the
+  // plugin's env propagation are OpenCode-owned, not model-dependent, so a
+  // missing/empty/"standalone"/mismatched scope fails the real-model path just
+  // as it fails the deterministic gate.
   if (scopeProbe === undefined) {
     return {
       ok: false,
       error: "the scope probe Bash call (printenv AGENT_TERMINAL_SCOPE) is missing",
     }
   }
-  if (mode === "strict") {
-    if (transcriptSessionID === undefined) {
-      return {
-        ok: false,
-        error: "transcript does not carry a sessionID, so the scope probe cannot be validated",
-      }
+  if (transcriptSessionID === undefined || transcriptSessionID.trim() === "") {
+    return {
+      ok: false,
+      error: "transcript does not carry a sessionID, so the scope probe cannot be validated",
     }
-    const printed = scopeProbe.output.trim()
-    if (printed !== transcriptSessionID) {
-      return {
-        ok: false,
-        error: `AGENT_TERMINAL_SCOPE (${printed}) does not match the OpenCode session id (${transcriptSessionID})`,
-      }
+  }
+  const printed = scopeProbe.output.trim()
+  if (printed !== transcriptSessionID) {
+    return {
+      ok: false,
+      error: `AGENT_TERMINAL_SCOPE (${printed}) does not match the OpenCode session id (${transcriptSessionID})`,
     }
   }
 

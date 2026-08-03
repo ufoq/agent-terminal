@@ -357,4 +357,25 @@ describe("scope-probe verification", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain("must be the first Bash call")
   })
+
+  it("rejects a standalone scope value in real mode", async () => {
+    const result = await verifyEvents(
+      [scopeProbe("standalone\n"), ...successfulLifecycle().slice(1)],
+      "real",
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("does not match the OpenCode session id")
+  })
+
+  it("rejects an empty top-level sessionID in strict mode", async () => {
+    const noId = [scopeProbe("ses_12345\n"), ...successfulLifecycle().slice(1)].map((event) => ({
+      ...event,
+      sessionID: "",
+    }))
+    const result = await verifyEvents(noId, "strict", undefined, false)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("does not carry a sessionID")
+  })
 })
