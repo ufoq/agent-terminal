@@ -52,7 +52,7 @@ impl StateStore {
     }
 
     pub fn lock_bootstrap(&self, timeout: Duration) -> Result<BootstrapLock, Error> {
-        ensure_private_dir(self.paths.state_root())?;
+        ensure_private_dir(self.paths.scope_root())?;
         let lock_path = self.paths.bootstrap_lock_file();
         let lock_file = OpenOptions::new()
             .read(true)
@@ -63,12 +63,7 @@ impl StateStore {
             .map_err(|source| state_io("open bootstrap lock", &lock_path, source))?;
         set_private_file(&lock_path)?;
         let deadline = Instant::now() + timeout;
-        let mut first_attempt = true;
         loop {
-            if !first_attempt && !retry_allowed(deadline, Instant::now()) {
-                return Err(Error::LockBusy);
-            }
-            first_attempt = false;
             match lock_file.try_lock_exclusive() {
                 Ok(()) => {
                     return Ok(BootstrapLock {
@@ -193,10 +188,6 @@ fn set_private_file(path: &Path) -> Result<(), Error> {
         .map_err(|source| state_io("set state file permissions", path, source))
 }
 
-fn retry_allowed(deadline: Instant, now: Instant) -> bool {
-    now < deadline
-}
-
 #[cfg(not(unix))]
 fn set_private_file(_path: &Path) -> Result<(), Error> {
     Ok(())
@@ -207,18 +198,5 @@ fn state_io(action: &'static str, path: &Path, source: io::Error) -> Error {
         action,
         path: path.to_path_buf(),
         source,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Instant;
-
-    use super::retry_allowed;
-
-    #[test]
-    fn retry_is_rejected_at_the_deadline() {
-        let deadline = Instant::now();
-        assert!(!retry_allowed(deadline, deadline));
     }
 }

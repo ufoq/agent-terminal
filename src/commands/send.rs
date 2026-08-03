@@ -1,4 +1,5 @@
 use crate::{
+    commands::dispatch,
     controller::{Controller, Deadline},
     domain::JobName,
     error::Error,
@@ -23,16 +24,10 @@ impl<Z: Zellij> Controller<Z> {
             });
         }
         let target = Self::target(&registry, &active);
-        match self
-            .zellij
-            .paste(&target, text, self.zellij.command_timeout())
-        {
-            Ok(()) => {}
-            Err(Error::ZellijTimeout) => {
-                return Err(Error::DeliveryUncertain);
-            }
-            Err(error) => return Err(error),
-        }
+        dispatch(
+            self.zellij
+                .paste(&target, text, self.zellij.command_timeout()),
+        )?;
         if submit {
             let pane = self.live_pane(&registry, &active, Deadline::per_call())?;
             if pane.as_ref().is_none_or(|pane| pane.exited) {
@@ -40,17 +35,11 @@ impl<Z: Zellij> Controller<Z> {
                     job: job.to_string(),
                 });
             }
-            match self.zellij.send_keys(
+            dispatch(self.zellij.send_keys(
                 &target,
                 &["Enter".to_owned()],
                 self.zellij.command_timeout(),
-            ) {
-                Ok(()) => {}
-                Err(Error::ZellijTimeout) => {
-                    return Err(Error::DeliveryUncertain);
-                }
-                Err(error) => return Err(error),
-            }
+            ))?;
         }
         Ok(SendData)
     }

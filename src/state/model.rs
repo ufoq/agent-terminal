@@ -81,9 +81,9 @@ pub struct PendingStart {
 
 impl PendingStart {
     #[must_use]
-    fn new(cwd: PathBuf, command: Vec<String>) -> Self {
+    pub fn for_job(job: &JobName, cwd: PathBuf, command: Vec<String>) -> Self {
         let operation_nonce = Uuid::new_v4().simple().to_string();
-        let title = format!("agent-terminal:pending:{}", &operation_nonce[..12]);
+        let title = format!("agent-terminal:{job}:{}", &operation_nonce[..12]);
         Self {
             operation_nonce,
             title,
@@ -92,13 +92,6 @@ impl PendingStart {
             pane_id: None,
             created_millis: now_millis(),
         }
-    }
-
-    #[must_use]
-    pub fn for_job(job: &JobName, cwd: PathBuf, command: Vec<String>) -> Self {
-        let mut pending = Self::new(cwd, command);
-        pending.title = format!("agent-terminal:{job}:{}", &pending.operation_nonce[..12]);
-        pending
     }
 }
 

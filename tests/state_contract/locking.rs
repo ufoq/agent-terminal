@@ -117,7 +117,7 @@ fn private_modes_are_created_or_repaired() -> TestResult {
     {
         use std::os::unix::fs::PermissionsExt as _;
 
-        fs::set_permissions(paths.state_root(), fs::Permissions::from_mode(0o777))?;
+        fs::set_permissions(paths.scope_root(), fs::Permissions::from_mode(0o777))?;
         fs::set_permissions(paths.project_dir(), fs::Permissions::from_mode(0o777))?;
         fs::set_permissions(paths.lock_file(), fs::Permissions::from_mode(0o666))?;
         fs::set_permissions(paths.state_file(), fs::Permissions::from_mode(0o666))?;
@@ -133,7 +133,7 @@ fn private_modes_are_created_or_repaired() -> TestResult {
         drop(repaired_bootstrap);
 
         assert_eq!(
-            fs::metadata(paths.state_root())?.permissions().mode() & 0o777,
+            fs::metadata(paths.scope_root())?.permissions().mode() & 0o777,
             0o700
         );
         assert_eq!(

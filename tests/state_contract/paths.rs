@@ -46,7 +46,6 @@ fn project_path_accessors_stay_under_expected_roots() -> TestResult {
     let project_dir = scope_root.join("projects").join(project_digest(&project));
 
     assert_eq!(paths.scope_root(), scope_root);
-    assert_eq!(paths.state_root(), paths.scope_root());
     assert_eq!(paths.project_dir(), project_dir);
     assert_eq!(
         paths.zellij_socket_dir(),

@@ -1,4 +1,5 @@
 use crate::{
+    commands::dispatch,
     controller::{Controller, Deadline},
     domain::{JobName, Key},
     error::Error,
@@ -26,17 +27,11 @@ impl<Z: Zellij> Controller<Z> {
             .iter()
             .map(|key| key.zellij_token().to_owned())
             .collect();
-        match self.zellij.send_keys(
+        dispatch(self.zellij.send_keys(
             &Self::target(&registry, &active),
             &tokens,
             self.zellij.command_timeout(),
-        ) {
-            Ok(()) => {}
-            Err(Error::ZellijTimeout) => {
-                return Err(Error::DeliveryUncertain);
-            }
-            Err(error) => return Err(error),
-        }
+        ))?;
         Ok(PressData)
     }
 }

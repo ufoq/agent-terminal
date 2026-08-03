@@ -80,11 +80,6 @@ impl ProjectPaths {
     }
 
     #[must_use]
-    pub fn state_root(&self) -> &Path {
-        &self.scope_root
-    }
-
-    #[must_use]
     pub fn scope_root(&self) -> &Path {
         &self.scope_root
     }
