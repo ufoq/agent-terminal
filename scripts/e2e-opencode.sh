@@ -332,8 +332,12 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   # OPENCODE_RUN_FLAGS is intentionally word-split so callers can supply multiple CLI flags.
   # shellcheck disable=SC2086
   PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-600}"
-  # Run opencode with a PATH that does not contain the bundled binaries, so the
-  # plugin's shell.env hook (not a preloaded PATH) must expose them to the Bash tool.
+  # Run opencode with a PATH that does not contain the bundled binaries. The
+  # plugin's factory-time process.env.PATH mutation still exposes them, so the
+  # clean PATH alone does NOT prove the shell.env hook fired. Scope injection
+  # (AGENT_TERMINAL_SCOPE) is proven separately by the scope-probe Bash call
+  # that the verifier asserts is the first tool_use event and that it matches
+  # the transcript's sessionID.
   if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" opencode run --auto --format json --dir "$WORKDIR" --model "$OPENCODE_MODEL" \
     $OPENCODE_RUN_FLAGS -- "$(cat "$PROMPT_FILE")" \
     >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then

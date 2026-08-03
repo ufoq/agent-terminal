@@ -24,6 +24,7 @@ type TranscriptText = {
 
 type TranscriptEvent = {
   readonly type: "tool_use" | "text"
+  readonly sessionID?: string
   readonly part: TranscriptTool | TranscriptText
 }
 
@@ -35,6 +36,28 @@ function failedTool(callID: string): TranscriptEvent {
       tool: "task",
       callID,
       state: { status: "error", error: "tool failed" },
+    },
+  }
+}
+
+// The scope probe is the first Bash call in the deterministic gate. Its output
+// is the OpenCode session id the plugin's shell.env hook injected.
+const SESSION_ID = "ses_12345"
+const SCOPE_PROBE_OUTPUT = `${SESSION_ID}\n`
+
+function scopeProbe(outputText: string = SCOPE_PROBE_OUTPUT, sessionID?: string): TranscriptEvent {
+  return {
+    type: "tool_use",
+    ...(sessionID === undefined ? {} : { sessionID }),
+    part: {
+      type: "tool",
+      tool: "bash",
+      callID: "scope-probe",
+      state: {
+        status: "completed",
+        input: { command: "printenv AGENT_TERMINAL_SCOPE" },
+        output: outputText,
+      },
     },
   }
 }
@@ -72,6 +95,7 @@ function tool(
 
 function successfulLifecycle(extra: readonly TranscriptEvent[] = []): TranscriptEvent[] {
   return [
+    scopeProbe(),
     tool("list-1", "agent-terminal list", output({ jobs: [] })),
     tool("start-1", startCommand, output({ state: "running" })),
     ...extra,
@@ -102,11 +126,17 @@ async function verifyEvents(
   events: readonly TranscriptEvent[],
   mode: "strict" | "real",
   expectedWorkdir?: string,
+  stampSessionID = true,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "agent-terminal-verify-"))
   const transcript = join(directory, "transcript.jsonl")
   try {
-    await writeFile(transcript, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`)
+    // Mirror the real `opencode run` transcript: every event line carries the
+    // same top-level sessionID.
+    const stamped = stampSessionID
+      ? events.map((event) => ({ ...event, sessionID: event.sessionID ?? SESSION_ID }))
+      : events
+    await writeFile(transcript, `${stamped.map((event) => JSON.stringify(event)).join("\n")}\n`)
     return verifyE2E(transcript, jobName, mode, expectedWorkdir)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -145,7 +175,10 @@ describe("real-model transcript verification", () => {
 
   it("rejects compound agent-terminal mutations", async () => {
     const result = await verifyEvents(
-      [tool("compound", "agent-terminal stop prompt-smoke-test; agent-terminal list", output({}))],
+      [
+        scopeProbe(),
+        tool("compound", "agent-terminal stop prompt-smoke-test; agent-terminal list", output({})),
+      ],
       "real",
     )
 
@@ -188,7 +221,7 @@ describe("real-model transcript verification", () => {
 
   it("rejects nonzero Bash metadata before lifecycle verification", async () => {
     const result = await verifyEvents(
-      [tool("list-1", "agent-terminal list", output({ jobs: [] }), { exit: 1 })],
+      [scopeProbe(), tool("list-1", "agent-terminal list", output({ jobs: [] }), { exit: 1 })],
       "real",
     )
 
@@ -208,7 +241,7 @@ describe("real-model transcript verification", () => {
 
     for (const [index, command] of commands.entries()) {
       const result = await verifyEvents(
-        [tool(`invalid-${index}`, command, output({ jobs: [] }))],
+        [scopeProbe(), tool(`invalid-${index}`, command, output({ jobs: [] }))],
         "real",
       )
 
@@ -252,12 +285,76 @@ describe("real-model transcript verification", () => {
 
   it("rejects an external Bash workdir", async () => {
     const result = await verifyEvents(
-      [tool("list-1", "agent-terminal list", output({ jobs: [] }), undefined, "/tmp/external")],
+      [
+        scopeProbe(),
+        tool("list-1", "agent-terminal list", output({ jobs: [] }), undefined, "/tmp/external"),
+      ],
       "real",
       "/tmp/harness",
     )
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toContain("unexpected workdir")
+  })
+})
+
+describe("scope-probe verification", () => {
+  it("requires the scope probe to be present", async () => {
+    const result = await verifyEvents(successfulLifecycle().slice(1), "strict")
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("scope probe Bash call")
+  })
+
+  it("rejects a scope value that does not match the transcript session id", async () => {
+    const result = await verifyEvents(
+      [scopeProbe("ses_99999\n"), ...successfulLifecycle().slice(1)],
+      "strict",
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("does not match the OpenCode session id")
+  })
+
+  it("rejects an empty scope value", async () => {
+    const result = await verifyEvents(
+      [scopeProbe("\n"), ...successfulLifecycle().slice(1)],
+      "strict",
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("does not match the OpenCode session id")
+  })
+
+  it("requires a sessionID in strict mode", async () => {
+    const result = await verifyEvents(
+      [scopeProbe(SCOPE_PROBE_OUTPUT), ...successfulLifecycle().slice(1)],
+      "strict",
+      undefined,
+      false,
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("transcript does not carry a sessionID")
+  })
+
+  it("accepts a matching scope value in strict mode", async () => {
+    const result = await verifyEvents(successfulLifecycle(), "strict")
+
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("requires the probe to be the first Bash call", async () => {
+    const result = await verifyEvents(
+      [
+        tool("list-1", "agent-terminal list", output({ jobs: [] })),
+        scopeProbe(),
+        ...successfulLifecycle().slice(2),
+      ],
+      "strict",
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("must be the first Bash call")
   })
 })

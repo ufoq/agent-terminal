@@ -22,6 +22,7 @@ export type TextPart = {
 
 export type StepEvent = {
   type: string
+  sessionID?: string
   part: ToolPart | TextPart | Record<string, unknown>
 }
 
@@ -134,6 +135,19 @@ function containsAgentTerminalToken(command: string): boolean {
   return /(?:^|[\s'"])agent-terminal\b/.test(command)
 }
 
+// The scope probe is the first Bash call in the deterministic gate. It proves
+// the plugin's shell.env hook set AGENT_TERMINAL_SCOPE to the OpenCode session
+// id (which the model does not supply), by printing it back into the tool
+// result. The factory-time process.env.PATH mutation alone could expose the
+// binary while scope silently fell back to "standalone", so this probe (and
+// its exact-match check in strict mode) is what actually guards cross-agent
+// isolation.
+const SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
+
+function isScopeProbeCommand(command: string | undefined): boolean {
+  return command?.trim() === SCOPE_PROBE_COMMAND
+}
+
 function parseAgentTerminalCommand(command: string | undefined): ParsedAgentCommand {
   if (!command) return { kind: "other" }
   const trimmed = command.trim()
@@ -231,7 +245,12 @@ export function verifyE2E(
     }
   }
 
+  // The transcript's top-level sessionID (emitted by `opencode run`) is the
+  // value the plugin's shell.env hook must have injected as AGENT_TERMINAL_SCOPE.
+  const transcriptSessionID = events.find((ev) => typeof ev.sessionID === "string")?.sessionID
+
   const toolEvents: ToolEvent[] = []
+  let scopeProbe: ToolEvent | undefined
   for (let i = 0; i < events.length; i++) {
     const ev = events[i]
     if (ev === undefined) continue
@@ -261,6 +280,24 @@ export function verifyE2E(
         error: `Bash tool call returned a non-zero exit status: ${JSON.stringify(part.state.metadata).slice(0, 200)}`,
       }
     }
+    const command = part.state?.input?.command
+    if (isScopeProbeCommand(command)) {
+      if (scopeProbe !== undefined) {
+        return { ok: false, error: "the scope probe Bash call appeared more than once" }
+      }
+      if (toolEvents.length !== 0) {
+        return {
+          ok: false,
+          error: `the scope probe must be the first Bash call, but a lifecycle call preceded it: ${toolEvents[0]?.command ?? ""}`,
+        }
+      }
+      scopeProbe = {
+        index: i,
+        command: SCOPE_PROBE_COMMAND,
+        output: part.state.output ?? "",
+      }
+      continue
+    }
     const workdir = part.state.input?.workdir
     if (expectedWorkdir !== undefined && workdir !== undefined && workdir !== expectedWorkdir) {
       return {
@@ -268,17 +305,17 @@ export function verifyE2E(
         error: `Bash tool call used unexpected workdir: ${workdir}; expected ${expectedWorkdir}`,
       }
     }
-    const parsedCommand = parseAgentTerminalCommand(part.state?.input?.command)
+    const parsedCommand = parseAgentTerminalCommand(command)
     if (parsedCommand.kind === "other") {
       return {
         ok: false,
-        error: `Bash tool call is not an agent-terminal lifecycle command: ${part.state?.input?.command ?? ""}`,
+        error: `Bash tool call is not an agent-terminal lifecycle command: ${command ?? ""}`,
       }
     }
     if (parsedCommand.kind === "invalid") {
       return {
         ok: false,
-        error: `invalid agent-terminal command: ${parsedCommand.reason}: ${part.state?.input?.command ?? ""}`,
+        error: `invalid agent-terminal command: ${parsedCommand.reason}: ${command ?? ""}`,
       }
     }
     toolEvents.push({
@@ -291,6 +328,31 @@ export function verifyE2E(
 
   if (toolEvents.length === 0) {
     return { ok: false, error: "no completed Bash agent-terminal tool_use events found" }
+  }
+
+  // The scope probe must be present and, in strict mode, its printed value must
+  // exactly match the transcript's OpenCode session id. This is the assertion
+  // that the plugin actually injected the per-session scope (not "standalone").
+  if (scopeProbe === undefined) {
+    return {
+      ok: false,
+      error: "the scope probe Bash call (printenv AGENT_TERMINAL_SCOPE) is missing",
+    }
+  }
+  if (mode === "strict") {
+    if (transcriptSessionID === undefined) {
+      return {
+        ok: false,
+        error: "transcript does not carry a sessionID, so the scope probe cannot be validated",
+      }
+    }
+    const printed = scopeProbe.output.trim()
+    if (printed !== transcriptSessionID) {
+      return {
+        ok: false,
+        error: `AGENT_TERMINAL_SCOPE (${printed}) does not match the OpenCode session id (${transcriptSessionID})`,
+      }
+    }
   }
 
   let step = 0

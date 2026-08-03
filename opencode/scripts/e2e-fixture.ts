@@ -33,7 +33,17 @@ type HistoryMessage = {
   tool_calls?: ToolCall[]
 } & ToolResult
 
+const SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
+
 const STEPS = [
+  {
+    // First Bash call: print the plugin-injected scope. Its result is raw
+    // text (the OpenCode session id), not JSON; only non-empty is required
+    // here, the verifier asserts the exact session-id match.
+    probe: true as const,
+    cmd: (_job: string) => SCOPE_PROBE_COMMAND,
+    onResult: "scope-probe",
+  },
   {
     cmd: (_job: string) => `agent-terminal list`,
     onResult: "list",
@@ -197,6 +207,13 @@ function parseResultBody(content: string): ({ status: string } & Record<string, 
 function validateStep(stepIdx: number, job: string, content: string | null): StepCheck {
   if (content === null || content === "") {
     return { ok: false, retry: false, error: `step ${stepIdx + 1}: empty tool result` }
+  }
+  const step = STEPS[stepIdx]
+  // The scope probe's result is raw text (the printed session id), not JSON.
+  if (step !== undefined && "probe" in step) {
+    if (content.trim() === "")
+      return { ok: false, retry: false, error: "scope probe printed an empty AGENT_TERMINAL_SCOPE" }
+    return { ok: true }
   }
   const body = parseResultBody(content)
   if (!body) {
@@ -376,7 +393,7 @@ function buildSuccessResponse(requestId: string, model: string): object {
         index: 0,
         message: {
           role: "assistant",
-          content: "E2E_SUCCESS\nAll 9 agent-terminal steps completed and verified.",
+          content: "E2E_SUCCESS\nAll 9 agent-terminal lifecycle steps completed and verified.",
         },
         finish_reason: "stop" as const,
       },
