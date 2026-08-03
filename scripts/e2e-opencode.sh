@@ -5,7 +5,6 @@ set -Eeuo pipefail
 umask 077
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly SKILL_SOURCE="$REPO_ROOT/opencode/skills/agent-terminal/SKILL.md"
 
 repo_owner=""
 if command -v stat >/dev/null 2>&1; then
