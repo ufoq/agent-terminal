@@ -276,7 +276,7 @@ The main borrowed pattern is Claude Code's split between background start, outpu
 
 ## 12. Cross-agent scoping
 
-The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. By default the plugin sets it to the OpenCode session id (never the model). The variable is optional and overridable: an agent may set it explicitly — for example to the session id of a parent agent so a subagent shares that parent's terminal state — and the plugin then honors the explicit value instead of overwriting it. The plugin only auto-injects the session id when `AGENT_TERMINAL_SCOPE` is unset.
+The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. By default the plugin sets it to the OpenCode session id (never the model). The variable is optional and overridable: agents that need to share terminal state — for example a parent and a subagent working on the same task — each set it to the same task-specific value (such as `20260803-fix-auth-refactor`) so they land in one intended scope without coupling to any specific session. The plugin honors an explicit value unchanged and only auto-injects the session id when the variable is unset.
 
 State is stored under a scoped directory tree:
 

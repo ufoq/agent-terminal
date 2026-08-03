@@ -116,7 +116,7 @@ The `screen` field on `read` is a bounded visible snapshot (newest 200 lines, 32
 
 ## Scope isolation
 
-An invisible `AGENT_TERMINAL_SCOPE` environment variable isolates each agent's terminal state. The model does not manage it; the plugin sets it to the OpenCode session id by default. It is optional and overridable: if you explicitly set `AGENT_TERMINAL_SCOPE` to the session id of a parent agent, jobs run in that parent's scope so the parent and subagent share terminal state.
+An invisible `AGENT_TERMINAL_SCOPE` environment variable isolates each agent's terminal state. The model does not manage it; the plugin sets it to the OpenCode session id by default. It is optional and overridable: to share terminal state across agents (for example a parent and a subagent working on the same task), each agent sets `AGENT_TERMINAL_SCOPE` to the same task-specific value rather than a full session id — for example `20260803-fix-auth-refactor` — so all of them land in one intended scope without coupling to any specific session.
 
 ## Rules
 

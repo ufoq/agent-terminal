@@ -132,7 +132,12 @@ Public states are deliberately small:
 
 Exited panes are held so their visible screen and exit status remain readable. `stop` closes the
 pane and removes the job. Stop sends Ctrl+C, waits up to 5 seconds for the command to exit, then
-force-closes the pane and removes the job. It auto-escalates; no `--force` flag is needed.
+force-closes the pane and removes the job. It auto-escalates; no `--force` flag is needed. When the
+last job in a session is stopped, `stop` also tears down that session's Zellij server, so there is
+no daemon left behind. A crashed agent's orphaned daemon (whose last `stop` never ran) can be
+reclaimed by an operator with `pkill -f 'agent-terminal-<scope-digest>'` or, less precisely,
+`pkill -f zellij`. Agent-driven cleanup is via `stop` only; no separate garbage-collection command
+exists.
 
 Screen reads are ANSI-stripped and bounded to the newest 200 lines and 32 KiB. They represent the
 visible terminal screen, not a canonical stdout/stderr log.
@@ -142,9 +147,10 @@ visible terminal screen, not a canonical stdout/stderr log.
 Each OpenCode session gets its own invisible scope so concurrent agents never interfere. The plugin
 sets `AGENT_TERMINAL_SCOPE` to the session id by default; state and Zellij sockets are isolated
 per-scope. The model uses only job names and does not manage scoping. The variable is optional and
-overridable: setting it explicitly (e.g. to a parent's session id to share terminal state with a
-subagent) is honored unchanged — the plugin only auto-injects the session id when it is unset.
-When running the CLI directly without a plugin, the scope defaults to `standalone`.
+overridable: to share terminal state across agents (e.g. a parent and subagent on the same task),
+each sets it to the same task-specific value such as `20260803-fix-auth-refactor` — the plugin
+honors an explicit value unchanged and only auto-injects the session id when unset. When running
+the CLI directly without a plugin, the scope defaults to `standalone`.
 
 ## End-to-end testing
 

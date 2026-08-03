@@ -167,8 +167,8 @@ describe("npm package contract", () => {
     const hook = hooks["shell.env"]
     if (!hook) throw new Error("shell.env hook missing")
 
-    // An explicit scope set by the agent (e.g. parent/subagent pane sharing)
-    // must win over the auto-injected session id.
+    // An explicit task-specific scope set by the agent (e.g. for parent/subagent
+    // coordination) must win over the auto-injected session id.
     const output: ShellEnvOutput = { env: { AGENT_TERMINAL_SCOPE: "shared-pane-scope" } }
     hook({ sessionID: "test-session-c" }, output)
     expect(output.env["AGENT_TERMINAL_SCOPE"]).toBe("shared-pane-scope")
