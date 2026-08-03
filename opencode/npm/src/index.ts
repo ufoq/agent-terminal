@@ -125,14 +125,19 @@ export async function createServerHooks(input: CreateServerHooksInput = {}): Pro
         output.env["PATH"] ?? process.env["PATH"] ?? "",
         bundledZellijMissing,
       )
-      // Fail closed: never collapse into a shared scope. Every Bash call must be
-      // bound to a real OpenCode session; a missing/empty sessionID would make
-      // concurrent agents collide, so reject it rather than guess a scope.
-      const scope = input.sessionID.trim()
-      if (scope === "") {
-        throw new Error("agent-terminal: shell.env requires a non-empty OpenCode sessionID")
+      // Scope is optional and overridable: an explicit AGENT_TERMINAL_SCOPE set
+      // by the agent (e.g. to share a pane between a parent and subagent) is
+      // honored unchanged. Only when it is unset do we fall back to the OpenCode
+      // session id, so the default is per-session isolation. We fail closed on
+      // an empty session id rather than collapse concurrent agents into one scope.
+      const existing = output.env["AGENT_TERMINAL_SCOPE"] ?? process.env["AGENT_TERMINAL_SCOPE"]
+      if (existing === undefined || existing.trim() === "") {
+        const scope = input.sessionID.trim()
+        if (scope === "") {
+          throw new Error("agent-terminal: shell.env requires a non-empty OpenCode sessionID")
+        }
+        output.env["AGENT_TERMINAL_SCOPE"] = scope
       }
-      output.env["AGENT_TERMINAL_SCOPE"] = scope
     },
   }
 }

@@ -151,7 +151,8 @@ describe("agent-terminal CLI skill contract", () => {
   test("documents plugin-managed per-session scope isolation", async () => {
     const skill = await readFile(skillPath, "utf8")
     expect(skill).toContain("AGENT_TERMINAL_SCOPE")
-    expect(skill).toContain("plugin sets it for each OpenCode session")
+    expect(skill).toContain("plugin sets it to the OpenCode session id by default")
+    expect(skill).toContain("optional and overridable")
   })
 
   test("skill framing stays CLI-first with no legacy wording", async () => {

@@ -156,6 +156,43 @@ describe("npm package contract", () => {
     expect(() => missing(empty, { env: {} })).toThrow(/sessionID/)
   })
 
+  it("honors an explicit AGENT_TERMINAL_SCOPE without overwriting it", async () => {
+    const module = await importSharedModule()
+    const hooks = await module.createServerHooks({
+      arch: "x64",
+      platform: "linux",
+      packageRoot: slimPackage,
+      stderr: () => undefined,
+    })
+    const hook = hooks["shell.env"]
+    if (!hook) throw new Error("shell.env hook missing")
+
+    // An explicit scope set by the agent (e.g. parent/subagent pane sharing)
+    // must win over the auto-injected session id.
+    const output: ShellEnvOutput = { env: { AGENT_TERMINAL_SCOPE: "shared-pane-scope" } }
+    hook({ sessionID: "test-session-c" }, output)
+    expect(output.env["AGENT_TERMINAL_SCOPE"]).toBe("shared-pane-scope")
+
+    // The injected PATH still works alongside an explicit scope.
+    expect(output.env["PATH"]?.split(":")[0]).toBe(join(slimPackage, "bin", "linux-x64"))
+  })
+
+  it("falls back to the session id only when AGENT_TERMINAL_SCOPE is unset", async () => {
+    const module = await importSharedModule()
+    const hooks = await module.createServerHooks({
+      arch: "x64",
+      platform: "linux",
+      packageRoot: slimPackage,
+      stderr: () => undefined,
+    })
+    const hook = hooks["shell.env"]
+    if (!hook) throw new Error("shell.env hook missing")
+
+    const output: ShellEnvOutput = { env: {} }
+    hook({ sessionID: "test-session-d" }, output)
+    expect(output.env["AGENT_TERMINAL_SCOPE"]).toBe("test-session-d")
+  })
+
   it("keeps the agent-terminal binary executable in both packages", () => {
     for (const packageRoot of [slimPackage, bundlePackage]) {
       const binPath = join(packageRoot, "bin", "linux-x64", "agent-terminal")

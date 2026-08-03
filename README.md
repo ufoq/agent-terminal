@@ -140,9 +140,11 @@ visible terminal screen, not a canonical stdout/stderr log.
 ## Cross-agent isolation
 
 Each OpenCode session gets its own invisible scope so concurrent agents never interfere. The plugin
-sets `AGENT_TERMINAL_SCOPE` to a session-unique value; state and Zellij sockets are isolated
-per-scope. The model uses only job names and does not manage scoping. When running the CLI directly
-without a plugin, the scope defaults to `standalone`.
+sets `AGENT_TERMINAL_SCOPE` to the session id by default; state and Zellij sockets are isolated
+per-scope. The model uses only job names and does not manage scoping. The variable is optional and
+overridable: setting it explicitly (e.g. to a parent's session id to share terminal state with a
+subagent) is honored unchanged — the plugin only auto-injects the session id when it is unset.
+When running the CLI directly without a plugin, the scope defaults to `standalone`.
 
 ## End-to-end testing
 
