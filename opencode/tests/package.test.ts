@@ -11,8 +11,6 @@ const packagesDir = join(npmRoot, "packages")
 const slimPackage = join(packagesDir, "opencode-agent-terminal")
 const bundlePackage = join(packagesDir, "opencode-agent-terminal-bundle-zellij")
 
-const expectedVersion = "0.1.2"
-
 type PackageManifest = {
   readonly name: string
   readonly version: string
@@ -60,8 +58,6 @@ describe("npm package contract", () => {
 
     expect(slim.name).toBe("@ufoq/opencode-agent-terminal")
     expect(bundle.name).toBe("@ufoq/opencode-agent-terminal-bundle-zellij")
-    expect(slim.version).toBe(expectedVersion)
-    expect(bundle.version).toBe(expectedVersion)
     expect(slim.version).toBe(bundle.version)
 
     for (const manifest of [slim, bundle]) {

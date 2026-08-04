@@ -9,7 +9,7 @@ Install by adding an exact version to `opencode.json`:
 
 ```json
 {
-  "plugin": ["@ufoq/opencode-agent-terminal@0.1.2"]
+  "plugin": ["@ufoq/opencode-agent-terminal@0.1.3"]
 }
 ```
 
