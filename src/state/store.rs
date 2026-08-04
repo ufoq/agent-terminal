@@ -63,7 +63,14 @@ impl StateStore {
             .map_err(|source| state_io("open bootstrap lock", &lock_path, source))?;
         set_private_file(&lock_path)?;
         let deadline = Instant::now() + timeout;
+        let mut first_attempt = true;
         loop {
+            // Refuse to retry past the deadline; the first attempt is always
+            // permitted so a zero-timeout caller can still make one try.
+            if !first_attempt && Instant::now() >= deadline {
+                return Err(Error::LockBusy);
+            }
+            first_attempt = false;
             match lock_file.try_lock_exclusive() {
                 Ok(()) => {
                     return Ok(BootstrapLock {
