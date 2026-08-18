@@ -7,7 +7,7 @@ use crate::{
     domain::{JobName, Key},
     error::Error,
     output::CommandData,
-    paths::{ProjectPaths, SCOPE_ENV, find_project_root},
+    paths::{ProjectPaths, find_project_root, resolve_scope},
     state::StateStore,
     zellij::ZellijCli,
 };
@@ -86,7 +86,7 @@ pub fn run(cli: Cli) -> Result<CommandData, Error> {
         Some(project) => project,
         None => find_project_root(&invocation_dir)?,
     };
-    let scope = std::env::var(SCOPE_ENV).unwrap_or_else(|_| "standalone".to_owned());
+    let scope = resolve_scope();
     let paths = ProjectPaths::new(&project, cli.state_dir.as_deref(), &scope)?;
     let store = StateStore::new(paths.clone());
     let zellij = ZellijCli::new(

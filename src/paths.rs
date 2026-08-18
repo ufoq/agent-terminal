@@ -128,10 +128,46 @@ pub fn project_digest(project_root: &Path) -> String {
 
 /// Environment variable that selects the agent scope.
 ///
-/// When absent, the CLI uses the stable literal scope `standalone` so direct
-/// users keep persistent state across invocations. `OpenCode` injects a stable
-/// per-session identity (the session id) through this variable.
+/// When absent, the CLI falls back to [`PI_SESSION_ID_ENV`] (pi/omp's native
+/// per-session identity) and then to the stable literal scope `standalone` so
+/// direct users keep persistent state across invocations. `OpenCode` injects a
+/// stable per-session identity (the session id) through this variable.
 pub const SCOPE_ENV: &str = "AGENT_TERMINAL_SCOPE";
+
+/// Environment variable pi (and omp, which is pi-based) injects into bash
+/// tool commands to identify the current session.
+///
+/// Used as a fallback scope source so agent-terminal gets per-session
+/// isolation under pi even without the extension.
+pub const PI_SESSION_ID_ENV: &str = "PI_SESSION_ID";
+
+/// Resolve the agent scope from a set of environment variable lookups.
+///
+/// Resolution order:
+/// 1. [`SCOPE_ENV`] (`AGENT_TERMINAL_SCOPE`) — explicit, overridable.
+/// 2. [`PI_SESSION_ID_ENV`] (`PI_SESSION_ID`) — pi/omp native session id.
+/// 3. `"standalone"` — default for direct CLI use.
+///
+/// Empty or whitespace-only values are treated as absent.
+#[must_use]
+pub fn resolve_scope_from(lookup: impl Fn(&str) -> Option<String>) -> String {
+    for var in [SCOPE_ENV, PI_SESSION_ID_ENV] {
+        if let Some(value) = lookup(var) {
+            if !value.trim().is_empty() {
+                return value;
+            }
+        }
+    }
+    "standalone".to_owned()
+}
+
+/// Resolve the agent scope from the process environment.
+///
+/// See [`resolve_scope_from`] for the resolution order.
+#[must_use]
+pub fn resolve_scope() -> String {
+    resolve_scope_from(|var| std::env::var(var).ok())
+}
 
 #[must_use]
 pub fn scope_digest(scope: &str) -> String {

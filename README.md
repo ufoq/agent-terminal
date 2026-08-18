@@ -9,6 +9,7 @@ The project contains:
 
 - a standalone Rust CLI;
 - an OpenCode npm plugin that bundles the CLI and skill;
+- a pi/omp coding agent extension that bundles the CLI and skill;
 - no daemon, HTTP service, persistent output log, or raw Zellij command passthrough.
 
 ## Requirements
@@ -18,7 +19,8 @@ The project contains:
   (`@ufoq/opencode-agent-terminal`);
 - The bundle variant (`@ufoq/opencode-agent-terminal-bundle-zellij`) includes its own Zellij;
 - Rust 1.85 or newer for source builds;
-- Bun is required for running the OpenCode skill contract tests and quality gate.
+- Bun is required for running the OpenCode skill contract tests and quality gate;
+- Bun is required for running the pi/omp extension tests and quality gate.
 
 ## Install
 
@@ -123,6 +125,45 @@ The CLI defaults `--project` to the nearest Git root and `start` defaults `--cwd
 directory. Most calls need no explicit `--project` or `--cwd`; use them only to override the default
 scope or working directory.
 
+## pi / omp skill
+
+Two npm packages are published:
+
+- `@ufoq/pi-agent-terminal` — bundles the static Linux x86_64 `agent-terminal` binary and the
+  skill. The host must have Zellij on `PATH`.
+- `@ufoq/pi-agent-terminal-bundle-zellij` — same as above, plus a pinned Zellij binary so no
+  host install is required.
+
+The extension is loaded via pi's `-e` flag, or auto-discovered from
+`~/.pi/agent/extensions/` (pi) or `~/.omp/agent/extensions/` (omp). Both packages declare the
+extension entry point in their `pi.extensions` manifest field.
+
+On load, the extension:
+
+- registers the CLI flags `--cwd`, `--no-lsp`, and `--no-context-files`, which pi does not
+  provide natively;
+- re-registers the bash tool with a `spawnHook` that injects `AGENT_TERMINAL_SCOPE` and
+  prepends the bundled binary directories to `PATH` for every bash command the agent runs;
+- registers the bundled `agent-terminal` skill via `resources_discover`.
+
+Scope injection differs between the two agents:
+
+- pi injects `PI_SESSION_ID` into the bash tool environment, so the `spawnHook` derives the
+  scope from it directly.
+- omp does not inject session environment variables, so the extension captures the session id
+  from the execute context's `sessionManager` and falls back to it in the `spawnHook`.
+
+The Rust CLI falls back to `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID` → `standalone`, so pi
+gets per-session isolation even when the extension is not loaded. omp does not expose
+`PI_SESSION_ID` to bash commands, so it requires the extension for per-session isolation;
+without it, omp sessions share the `standalone` scope.
+
+To use it, add the package to your pi/omp config or load the extension with `-e`:
+
+```bash
+pi -e npm:@ufoq/pi-agent-terminal-bundle-zellij
+```
+
 ## Lifecycle
 
 Public states are deliberately small:
@@ -146,11 +187,14 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 Each OpenCode session gets its own invisible scope so concurrent agents never interfere. The plugin
 sets `AGENT_TERMINAL_SCOPE` to the session id by default; state and Zellij sockets are isolated
-per-scope. The model uses only job names and does not manage scoping. The variable is optional and
-overridable: to share terminal state across agents (e.g. a parent and subagent on the same task),
-each sets it to the same task-specific value such as `20260803-fix-auth-refactor` — the plugin
-honors an explicit value unchanged and only auto-injects the session id when unset. When running
-the CLI directly without a plugin, the scope defaults to `standalone`.
+per-scope. The pi/omp extension does the same: its `spawnHook` injects `AGENT_TERMINAL_SCOPE`
+from `PI_SESSION_ID` (pi) or from the execute context's `sessionManager` (omp), and the Rust CLI
+falls back to `PI_SESSION_ID` when the extension is absent. The model uses only job names and does
+not manage scoping. The variable is optional and overridable: to share terminal state across
+agents (e.g. a parent and subagent on the same task), each sets it to the same task-specific value
+such as `20260803-fix-auth-refactor` — the plugin honors an explicit value unchanged and only
+auto-injects the session id when unset. When running the CLI directly without a plugin, the scope
+defaults to `standalone`.
 
 ## End-to-end testing
 
@@ -235,6 +279,44 @@ Linux runner (warm-cache `bun run release:check` completes in roughly a minute);
 quality gate (`cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test
 --all-targets`) dominates the runtime and can be run in parallel with the OpenCode gate.
 
+### pi/omp e2e gate
+
+`scripts/e2e-pi-local.sh` is a fully automated, deterministic gate mirroring the OpenCode gate
+but driving pi/omp instead. It runs as the invoking user, starts the same local
+OpenAI-compatible **fixture** server that drives the agent-terminal lifecycle deterministically,
+builds the locally bundled `@ufoq/pi-agent-terminal-bundle-zellij` package, and exercises a real
+Zellij server end-to-end through the real pi/omp binary with the extension loaded via `-e`.
+
+`AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`. The fixture
+provider is registered through a small provider extension file, since pi/omp do not read a
+config file for custom providers the way OpenCode does.
+
+The fixture and verifier strip omp's "Wall time: X seconds" output suffix, which omp's bash
+tool appends after the actual command output, so the strict JSON matching works for both
+agents.
+
+```bash
+AGENT_TERMINAL_AGENT=pi bash scripts/e2e-pi-local.sh
+AGENT_TERMINAL_AGENT=omp bash scripts/e2e-pi-local.sh
+```
+
+Run from `pi/` with Bun:
+
+```bash
+cd pi
+bun run e2e:pi
+bun run e2e:pi:skip-prompt
+bun run e2e:omp
+bun run e2e:omp:skip-prompt
+```
+
+The full release gate also runs `bun run check` first:
+
+```bash
+cd pi
+bun run release:check
+```
+
 ### Optional real-model e2e
 
 `scripts/e2e-opencode-real.sh` is an **optional, local-only** companion test that runs the same
@@ -295,6 +377,41 @@ Environment variables:
 - `AGENT_TERMINAL_CLEANUP` — set to `1` to remove the real-model wrapper worktree (default `0`,
   while projected config/auth data are always scrubbed).
 
+#### pi/omp real-model e2e
+
+`scripts/e2e-pi-real.sh` is the **optional, local-only** companion test for pi/omp, mirroring
+`scripts/e2e-opencode-real.sh`. It drives the same lifecycle through the real pi/omp binary with
+a **real model** from your own pi config, and — like the OpenCode version — it consumes real
+tokens, is not part of `release:check`, and is refused under CI unless you opt in. `AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`.
+
+```bash
+AGENT_TERMINAL_AGENT=pi PI_MODEL=litellm/deepseek-v4-flash bash scripts/e2e-pi-real.sh
+```
+
+The wrapper projects only the selected provider's model config (`models.json` for pi, `models.yml`
+for omp) and `auth.json` entries plus a minimal `settings.json` into a sandbox config dir
+(`PI_CODING_AGENT_DIR`), and always deletes that sandbox config on exit, even on failure. Nothing
+from your personal pi config leaks into the test run, and provider credentials are passed through
+only via an explicit env-var allowlist (`AGENT_TERMINAL_PROVIDER_ENV_VARS`) — never the whole host
+environment.
+
+Run from `pi/` with Bun:
+
+```bash
+cd pi
+bun run e2e:pi:real
+bun run e2e:omp:real
+```
+
+Environment variables:
+
+- `PI_MODEL` — `provider/model` alias that exists in your pi config (required).
+- `AGENT_TERMINAL_PI_CONFIG` — path to your real pi config directory (default `~/.pi/agent`).
+- `AGENT_TERMINAL_PROVIDER_ENV_VARS` — comma-separated allowlist of env vars passed through to
+  the sandbox.
+- `AGENT_TERMINAL_PROMPT_E2E_TIMEOUT` — model run timeout in seconds (default `900`).
+- `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI` — set to `1` to permit execution under CI.
+
 ## Development
 
 Rust quality gate:
@@ -325,6 +442,21 @@ Single skill test:
 ```bash
 cd opencode
 bun test -t 'teaches CLI commands'
+```
+
+pi/omp extension quality gate:
+
+```bash
+cd pi
+bun install
+bun run check
+```
+
+Single pi extension test:
+
+```bash
+cd pi
+bun test -t 'deriveSessionId'
 ```
 
 Real-Zellij integration tests create isolated controller sessions and remove them in test cleanup.

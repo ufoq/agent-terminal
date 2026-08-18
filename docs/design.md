@@ -286,6 +286,44 @@ State is stored under a scoped directory tree:
 
 Each scope also gets a private Zellij socket namespace under `<tmp>/agent-terminal-<scope-digest>`. Concurrent agents running in separate OpenCode sessions never see each other's jobs, even when they operate on the same project root. Session identity, pane ownership, and locks are all contained within one scope.
 
-When `AGENT_TERMINAL_SCOPE` is unset, the CLI uses the literal scope `standalone`. This is the default when running the binary directly outside of an OpenCode session.
+When `AGENT_TERMINAL_SCOPE` is unset, the CLI falls back to `PI_SESSION_ID` (pi's native per-session identity) and only then to the literal scope `standalone`. `standalone` is the default when running the binary directly outside of an agent session. Note that omp does not expose `PI_SESSION_ID` to bash commands, so under omp the extension is required for per-session isolation; without it, omp sessions share the `standalone` scope.
 
 The model does not manage scoping. It refers to jobs by their names and relies on the plugin to set the scope behind the scenes. The same job name may be used independently in different scopes without collision.
+
+## 13. pi/omp integration
+
+The pi coding agent (and omp, which is pi-based) is supported through a TypeScript extension in `pi/npm/src/index.ts`, built into two npm packages by `pi/npm/scripts/build.mjs`:
+
+- `@ufoq/pi-agent-terminal` — the extension, the static Linux x86_64 `agent-terminal` binary, and the skill. The host must have Zellij on `PATH`.
+- `@ufoq/pi-agent-terminal-bundle-zellij` — same, plus a pinned Zellij 0.44.3 binary.
+
+Both packages declare the extension entry point in their `pi.extensions` manifest field. The extension is loaded via pi's `-e` flag or auto-discovered from `~/.pi/agent/extensions/` (pi) or `~/.omp/agent/extensions/` (omp).
+
+### Scope injection
+
+The extension re-registers the bash tool with a `spawnHook` that injects `AGENT_TERMINAL_SCOPE` into every bash command the agent runs, mirroring the OpenCode plugin's `shell.env` hook. The session id is derived in this order:
+
+1. `AGENT_TERMINAL_SCOPE` — explicit, overridable, honored unchanged.
+2. `PI_SESSION_ID` — pi's native per-session environment variable.
+3. `PI_SESSION_FILE` — omp's session transcript path; the session id is extracted from the filename (the segment after the last underscore, minus the `.jsonl` extension).
+4. `ctx.sessionManager.getSessionId()` — captured from the execute context. omp does not inject session environment variables into the bash tool env (even with `exposeSessionEnvironment`), so the execute wrapper reads the session id from the runtime context and stores it for the `spawnHook` to use as a fallback.
+
+The `spawnHook` also prepends the bundled binary directories (`bin/linux-x64` and, for the bundle variant, `bin/zellij`) to `PATH`, so `agent-terminal` and Zellij resolve inside bash commands without host installs. The extension additionally mutates `process.env.PATH` at load time so the bundled binaries are visible to all child processes, not just the bash tool.
+
+### Rust CLI fallback
+
+The Rust CLI (`src/paths.rs`) resolves the scope with `resolve_scope_from`, which checks `AGENT_TERMINAL_SCOPE` first and then falls back to `PI_SESSION_ID` before the literal `standalone` scope. This means scope isolation works under pi even when the extension is not loaded — pi's native `PI_SESSION_ID` alone is sufficient. omp does not expose `PI_SESSION_ID` to bash commands, so under omp the extension is required for per-session isolation. Empty or whitespace-only values are treated as absent at every step.
+
+### Flag registration
+
+pi does not natively provide `--cwd`, `--no-lsp`, or `--no-context-files`, so the extension registers them with `pi.registerFlag` before any early return, ensuring they are always accepted regardless of whether the bundled binary is present. The `--cwd` flag selects the bash tool's working directory.
+
+### Build script
+
+`pi/npm/scripts/build.mjs` builds the Rust binary once (`x86_64-unknown-linux-musl`), compiles the extension with `bun build`, and copies both into each package. The `bun build` invocation passes `--external @earendil-works/pi-coding-agent` so the pi SDK is not bundled — the extension imports `createBashTool` and the extension API types from the host pi installation at runtime instead. The skill is shared with the OpenCode integration: `opencode/skills/` is copied verbatim into each package by `copySkillToPackage`, so there is a single source of truth for the skill content. The bundle variant's Zellij binary is content-pinned by SHA-256 and cached under `~/.cache/agent-terminal-zellij` for offline rebuilds.
+
+### e2e gate
+
+`scripts/e2e-pi-local.sh` is the deterministic release gate for the pi/omp integration, mirroring `scripts/e2e-opencode-local.sh`. `AGENT_TERMINAL_AGENT=pi|omp` selects the agent under test. Because pi/omp do not read a config file for custom providers, the fixture provider is registered through a small provider extension file loaded with `-e` alongside the agent-terminal extension. omp's bash tool appends `"Wall time: X seconds"` (and a `Command exited with code N` line) after the actual command output, so the fixture (`pi/scripts/e2e-fixture.ts`) and the strict verifier (`pi/scripts/e2e-verify.ts`) strip that suffix before extracting and matching the JSON payloads — this keeps the same strict transcript verification working for both agents.
+
+In addition to the deterministic gate, `scripts/e2e-pi-real.sh` is an **optional, local-only** real-model e2e mirroring `scripts/e2e-opencode-real.sh`: it is not a release gate, and it drives the same lifecycle through the real pi/omp binary with a real model from the user's own pi config. It projects only the selected provider's model config (`models.json` for pi, `models.yml` for omp) and `auth.json` entries plus a minimal `settings.json` into a sandbox config directory (`PI_CODING_AGENT_DIR`), which is always deleted on exit, and runs the shared harness with `AGENT_TERMINAL_VERIFY_MODE=real` so the verifier's relaxed real-mode checks apply — the `E2E_SUCCESS` marker, a scope probe, and up to 8 tool-call attempts for observational `read`/`list` milestones — instead of the strict fixture transcript matching.

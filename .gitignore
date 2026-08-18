@@ -7,6 +7,14 @@
 /opencode/npm/packages/*/bin/
 /opencode/npm/packages/*/skills/
 /opencode/npm/packages/*/*.tgz
+/pi/node_modules/
+/pi/.tsbuildinfo
+/pi/coverage/
+/pi/npm/dist/
+/pi/npm/packages/*/dist/
+/pi/npm/packages/*/bin/
+/pi/npm/packages/*/skills/
+/pi/npm/packages/*/*.tgz
 /.omo/
 /.*
 !.github/
