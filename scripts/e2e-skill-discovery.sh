@@ -302,27 +302,35 @@ if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
 fi
 
 printf 'Running %s agent with skills enabled ...\n' "$AGENT_TERMINAL_AGENT"
-# shellcheck disable=SC2086
-timeout "$PROMPT_E2E_TIMEOUT" env -i \
-  HOME="$RUN_DIR/home" \
-  USER="$(id -un)" \
-  LOGNAME="$(id -un)" \
-  SHELL=/bin/bash \
-  PATH="$ISOLATED_PATH" \
-  LANG=C.UTF-8 \
-  TERM=xterm-256color \
-  XDG_CONFIG_HOME="$RUN_DIR/config" \
-  XDG_DATA_HOME="$RUN_DIR/data" \
-  XDG_CACHE_HOME="$RUN_DIR/cache" \
-  XDG_STATE_HOME="$RUN_DIR/state" \
-  PI_CODING_AGENT_DIR="$RUN_DIR/config" \
-  PI_OFFLINE=1 \
-  "$AGENT_BIN" \
-  -p --mode json --model local-fixture/fixture \
-  -e "$EXTENSION_ARG" -e "$PROVIDER_EXTENSION" \
-  --no-context-files --no-lsp --no-session --thinking off \
-  --cwd "$RUN_DIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")" \
-  >"$TRANSCRIPT" 2>"$RUN_DIR/stderr.log" &
+# Launch the host from RUN_DIR (a subshell that cds first, the same pattern the
+# two-session harness uses): pi's --cwd flag is compatibility-only and does not
+# chdir, so without the cd the host would start with its cwd at WS_ROOT and a
+# pre-existing project resource could satisfy the smoke. All paths below are
+# absolute (derived from REPO_ROOT before any cd), so the cd cannot affect them.
+(
+  cd "$RUN_DIR"
+  # AGENT_FLAGS is intentionally word-split so omp can add its native flags.
+  # shellcheck disable=SC2086
+  exec env -i \
+    HOME="$RUN_DIR/home" \
+    USER="$(id -un)" \
+    LOGNAME="$(id -un)" \
+    SHELL=/bin/bash \
+    PATH="$ISOLATED_PATH" \
+    LANG=C.UTF-8 \
+    TERM=xterm-256color \
+    XDG_CONFIG_HOME="$RUN_DIR/config" \
+    XDG_DATA_HOME="$RUN_DIR/data" \
+    XDG_CACHE_HOME="$RUN_DIR/cache" \
+    XDG_STATE_HOME="$RUN_DIR/state" \
+    PI_CODING_AGENT_DIR="$RUN_DIR/config" \
+    PI_OFFLINE=1 \
+    timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_BIN" \
+    -p --mode json --model local-fixture/fixture \
+    -e "$EXTENSION_ARG" -e "$PROVIDER_EXTENSION" \
+    --no-context-files --no-lsp --no-session --thinking off \
+    --cwd "$RUN_DIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")"
+) >"$TRANSCRIPT" 2>"$RUN_DIR/stderr.log" &
 AGENT_PID=$!
 
 # Wait for the run to finish.

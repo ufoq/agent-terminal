@@ -322,20 +322,25 @@ the pinned binary is installed and verified.
 
 The pi adapter never touches the bash tool. Pi's native bash keeps its stock definition,
 approval, and concurrency by construction — the adapter neither replaces the tool nor
-wraps its execution. On load (after the linux/x64 guard and the bundled-binary check) it:
+wraps its execution. On load it guards the platform (`linux`) and then the architecture
+(`x64`) first, returning early on either mismatch; next it registers the compatibility
+flags; only the PATH mutation and skill registration are gated behind the bundled-binary
+check:
 
 1. Registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide
    natively. These are honest compatibility registrations: the adapter makes no behavior
    claims, and `--cwd` no longer feeds a bash tool (bash's working directory is the
    invocation directory). `--no-context-files` is native to pi and is not registered.
-2. Mutates `process.env.PATH` with the ordering `bundledDirs : piManagedBin : rest`
+2. Checks the bundled `agent-terminal` executable; if it is missing or not executable, the
+   adapter logs a diagnostic and returns before mutating PATH or registering the skill.
+3. Mutates `process.env.PATH` with the ordering `bundledDirs : piManagedBin : rest`
    (deduplicated). `piManagedBin` is `join(getAgentDir(), "bin")` — the SDK's root
    `getAgentDir` export, which honors `PI_CODING_AGENT_DIR`; the SDK does not export
    `getBinDir`. Because pi's `getShellEnv` live-spreads `process.env` and only prepends
    `~/.pi/agent/bin` when it is absent, the explicit insertion makes the managed-bin check
    pass and keeps the bundled directories first — a stale `agent-terminal`/`zellij` in the
    managed bin can never shadow the bundled ones.
-3. Registers the skill via `pi.on("resources_discover")`, returning
+4. Registers the skill via `pi.on("resources_discover")`, returning
    `{ skillPaths: [join(packageRoot, "skills")] }`.
 
 Scope: pi injects `PI_SESSION_ID` into every bash child natively, so per-session isolation
@@ -366,9 +371,15 @@ The handler composes the env defaults in this order:
    values, not shell text, and the child's explicit env overrides the inherited default.
    Without a session manager or session id, the scope is left unset (the CLI falls back to
    `standalone`) and a one-time diagnostic is emitted.
-2. PATH: `env.PATH` is the bundled binary directories prepended to the call's supplied
-   `env.PATH`, or to `process.env.PATH` when the call carries none (deduplicated). The
-   process PATH is the base so host binaries (e.g. `printenv`, `git`) stay resolvable.
+2. PATH: the revision branch applies only to valid env inputs — a non-null, non-array
+   object whose values are all strings. `env.PATH` is the bundled binary directories
+   prepended to the call's supplied `env.PATH`, or to `process.env.PATH` when the call
+   carries none (deduplicated). A supplied value (including an explicit empty string,
+   which yields the bundled dirs alone) replaces the process PATH rather than inheriting
+   it, so the process PATH is the base only when the call carries no `env.PATH`. Host
+   binaries (e.g. `printenv`, `git`) stay resolvable through that base. A malformed env
+   object (null, array, or non-string values) is returned unrevised so omp's native bash
+   schema validation reports it.
 
 The adapter registers the compatibility flag `--no-context-files` only, which omp does not
 provide natively; `--no-lsp` and `--cwd` are native to omp and are not registered.
@@ -441,7 +452,8 @@ which is always deleted on exit, and runs the shared harness with
 
 - **direnv PATH**: on direnv projects, an explicit bash `env.PATH` takes precedence over
   the `.envrc` PATH (omp's native caller-env-over-direnv precedence). The bundled binaries
-  and the process PATH are always available.
+  are always prepended; the process PATH is the base only when the call supplies no
+  `env.PATH`.
 - **Last-wins revision composition**: `tool_call` input revisions compose across extensions
   with the last returned input winning, and handlers do not observe each other's revisions.
   Another extension revising bash input may override this adapter's revision or vice versa —

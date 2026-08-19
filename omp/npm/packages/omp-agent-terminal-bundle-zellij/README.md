@@ -16,10 +16,19 @@ npm install @ufoq/omp-agent-terminal-bundle-zellij
 
 ## Usage
 
-Install the package and enable the extension in omp. The extension revises bash
-tool calls: it defaults `AGENT_TERMINAL_SCOPE` to the omp session id (preserving
-explicit overrides) and prepends the bundled agent-terminal and Zellij binaries
-to the bash `env.PATH`.
+Install the package and enable the extension in omp:
+
+```sh
+omp -e npm:@ufoq/omp-agent-terminal-bundle-zellij
+```
+
+The extension revises bash tool calls: it defaults `AGENT_TERMINAL_SCOPE` to the
+omp session id (preserving explicit overrides) and prepends the bundled
+agent-terminal and Zellij binaries to the bash `env.PATH`.
+
+When passing a local `-e` path instead, point it at the package root (the
+directory containing `package.json`), not `dist/index.js`, so that the native
+`skills/` sibling discovery runs.
 
 ## License
 

@@ -73,10 +73,13 @@ function joinPath(...parts: string[]): string {
 
 function isExecutableFile(path: string): boolean {
   try {
-    // Import-free executable check: `test -x` (universal on Linux) spawned via
-    // the bun global avoids any Node builtin module load.
-    const result = Bun.spawnSync(["test", "-x", path])
-    return result.exitCode === 0
+    // Import-free executable check: `test -f` (regular file) and `test -x`
+    // (executable) must both pass — `test -x` alone accepts directories.
+    // Spawned via the bun global avoids any Node builtin module load.
+    const regularFile = Bun.spawnSync(["test", "-f", path])
+    if (regularFile.exitCode !== 0) return false
+    const executable = Bun.spawnSync(["test", "-x", path])
+    return executable.exitCode === 0
   } catch {
     // `test` unresolvable or spawn failed: treat as not executable.
     return false

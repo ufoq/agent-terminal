@@ -234,9 +234,17 @@ readonly PROMPT_FILE="$WORKDIR/prompt.md"
 if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
   TOTAL_STEPS=11
   LIFECYCLE_OFFSET=2
+  # Scope shell reference for the start-command pane marker (scope-marker:):
+  # the fixture exact-matches the start command, and the marker must expand to
+  # the scope of the session that spawned the pane. omp exposes it via the
+  # extension-injected AGENT_TERMINAL_SCOPE; pi via PI_SESSION_ID. The
+  # single-quoted value is substituted verbatim into the prompt text (the
+  # agent types it into the Bash tool, the job shell expands it).
+  SCOPE_MARKER_ENV='$AGENT_TERMINAL_SCOPE'
 else
   TOTAL_STEPS=10
   LIFECYCLE_OFFSET=1
+  SCOPE_MARKER_ENV='$PI_SESSION_ID'
 fi
 
 {
@@ -264,7 +272,7 @@ PROMPT_PROBE
   fi
   cat <<'PROMPT_LIFECYCLE'
 __STEP_1__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
-__STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
+__STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; printf "scope-marker:%s\n" "__SCOPE_MARKER_ENV__"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
 __STEP_3__. Bash: `agent-terminal read __JOB_NAME__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
 __STEP_4__. Bash: send the literal text hello-e2e with `agent-terminal send __JOB_NAME__ -- hello-e2e`.
 __STEP_5__. Bash: `agent-terminal read __JOB_NAME__` and verify its JSON screen contains first:hello-e2e.
@@ -277,7 +285,7 @@ Do not modify repository files. After all __TOTAL_STEPS__ steps pass, end your f
 PROMPT_LIFECYCLE
 } >"$PROMPT_FILE"
 
-sed_exprs=(-e "s/__TOTAL_STEPS__/$TOTAL_STEPS/g" -e "s/__JOB_NAME__/$JOB_NAME/g" -e "s|__WORKDIR__|$WORKDIR|g")
+sed_exprs=(-e "s/__TOTAL_STEPS__/$TOTAL_STEPS/g" -e "s/__JOB_NAME__/$JOB_NAME/g" -e "s|__WORKDIR__|$WORKDIR|g" -e "s/__SCOPE_MARKER_ENV__/$SCOPE_MARKER_ENV/g")
 for i in $(seq 1 9); do
   sed_exprs+=(-e "s/__STEP_${i}__/$((i + LIFECYCLE_OFFSET))/g")
 done

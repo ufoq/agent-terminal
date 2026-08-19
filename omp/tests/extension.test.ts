@@ -108,25 +108,38 @@ type ToolCallResult = {
   readonly reason?: string
 }
 
+type ToolCallOutcome = {
+  readonly effectiveInput: Record<string, unknown> | undefined
+  readonly result: ToolCallResult | undefined
+}
+
 function invokeToolCall(
   handlers: Map<string, (...args: unknown[]) => unknown>,
   event: { input?: Record<string, unknown>; toolName: string },
   ctx: ToolCallCtx = {},
-): ToolCallResult | undefined {
+): ToolCallOutcome {
   const handler = handlers.get("tool_call")
-  if (handler === undefined) return undefined
-  return handler(event, ctx) as ToolCallResult | undefined
+  if (handler === undefined) {
+    return { effectiveInput: event.input, result: undefined }
+  }
+  // Model omp's effective-input semantics: a returned revision replaces the
+  // original input; an undefined return leaves the original input untouched.
+  const result = handler(event, ctx) as ToolCallResult | undefined
+  return { effectiveInput: result?.input ?? event.input, result }
 }
 
-function envOf(result: ToolCallResult | undefined): Record<string, unknown> {
-  expect(result?.input).toBeTypeOf("object")
-  const env = result?.input?.["env"]
+function envOf(outcome: ToolCallOutcome): Record<string, unknown> {
+  expect(outcome.effectiveInput).toBeTypeOf("object")
+  const env = outcome.effectiveInput?.["env"]
   expect(env).toBeTypeOf("object")
   return env as Record<string, unknown>
 }
 
 function pathParts(path: string): string[] {
-  return path.split(":").filter((entry) => entry !== "")
+  // Empty components are retained, never filtered: on Linux an empty PATH
+  // component means the CWD, so a constructed path ending in ":" (or with any
+  // empty component) must not be masked by splitting here.
+  return path.split(":")
 }
 
 const ORIGINAL_PATH = process.env["PATH"] ?? ""
@@ -168,83 +181,84 @@ describe("omp agent-terminal extension", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(handlers, {
-      toolName: "write_file",
-      input: { path: "/tmp/x" },
-    })
-    expect(result).toBeUndefined()
+    const event = { toolName: "write_file", input: { path: "/tmp/x" } }
+    const outcome = invokeToolCall(handlers, event)
+    expect(outcome.result).toBeUndefined()
+    // The effective input is unchanged: no revision is applied.
+    expect(outcome.effectiveInput).toEqual(event.input)
   })
 
   it("rejects a null env unrevised", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
-      handlers,
-      {
-        toolName: "bash",
-        input: { command: "echo hi", env: null as never },
-      },
-      { sessionManager: { getSessionId: () => "sess-123" } },
-    )
+    const event = {
+      toolName: "bash",
+      input: { command: "echo hi", env: null as never },
+    }
+    const outcome = invokeToolCall(handlers, event, {
+      sessionManager: { getSessionId: () => "sess-123" },
+    })
     // Untouched (not even the session scope is injected): the native bash
-    // schema validation reports the malformed env.
-    expect(result).toBeUndefined()
+    // schema validation reports the malformed env. The effective input is the
+    // original, not the returned undefined.
+    expect(outcome.result).toBeUndefined()
+    expect(outcome.effectiveInput).toEqual(event.input)
   })
 
   it("rejects an array env unrevised", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
-      handlers,
-      {
-        toolName: "bash",
-        input: { command: "echo hi", env: ["PATH=/usr/bin"] as never },
-      },
-      { sessionManager: { getSessionId: () => "sess-123" } },
-    )
-    expect(result).toBeUndefined()
+    const event = {
+      toolName: "bash",
+      input: { command: "echo hi", env: ["PATH=/usr/bin"] as never },
+    }
+    const outcome = invokeToolCall(handlers, event, {
+      sessionManager: { getSessionId: () => "sess-123" },
+    })
+    expect(outcome.result).toBeUndefined()
+    expect(outcome.effectiveInput).toEqual(event.input)
   })
 
   it("rejects an env with a non-string value unrevised", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
-      handlers,
-      {
-        toolName: "bash",
-        input: {
-          command: "echo hi",
-          env: { PATH: 123 } as never,
-        },
+    const event = {
+      toolName: "bash",
+      input: {
+        command: "echo hi",
+        env: { PATH: 123 } as never,
       },
-      { sessionManager: { getSessionId: () => "sess-123" } },
-    )
+    }
+    const outcome = invokeToolCall(handlers, event, {
+      sessionManager: { getSessionId: () => "sess-123" },
+    })
     // The explicit invalid value is not revised away and no session scope or
-    // bundled PATH is injected.
-    expect(result).toBeUndefined()
+    // bundled PATH is injected; the effective input is the original.
+    expect(outcome.result).toBeUndefined()
+    expect(outcome.effectiveInput).toEqual(event.input)
   })
 
   it("injects the session id as AGENT_TERMINAL_SCOPE when env is absent", () => {
     const root = createPackageLayout({ withZellij: true })
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi" } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    expect(envOf(result)["AGENT_TERMINAL_SCOPE"]).toBe("sess-123")
-    expect(result?.input?.["command"]).toBe("echo hi")
+    expect(envOf(outcome)["AGENT_TERMINAL_SCOPE"]).toBe("sess-123")
+    expect(outcome.result?.input?.["command"]).toBe("echo hi")
   })
 
   it("preserves an explicit AGENT_TERMINAL_SCOPE", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       {
         toolName: "bash",
@@ -252,7 +266,7 @@ describe("omp agent-terminal extension", () => {
       },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    expect(envOf(result)["AGENT_TERMINAL_SCOPE"]).toBe("shared")
+    expect(envOf(outcome)["AGENT_TERMINAL_SCOPE"]).toBe("shared")
   })
 
   it("treats empty or whitespace AGENT_TERMINAL_SCOPE as absent", () => {
@@ -260,7 +274,7 @@ describe("omp agent-terminal extension", () => {
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
     for (const emptyScope of ["", "   "]) {
-      const result = invokeToolCall(
+      const outcome = invokeToolCall(
         handlers,
         {
           toolName: "bash",
@@ -268,7 +282,7 @@ describe("omp agent-terminal extension", () => {
         },
         { sessionManager: { getSessionId: () => "sess-123" } },
       )
-      expect(envOf(result)["AGENT_TERMINAL_SCOPE"]).toBe("sess-123")
+      expect(envOf(outcome)["AGENT_TERMINAL_SCOPE"]).toBe("sess-123")
     }
   })
 
@@ -276,7 +290,7 @@ describe("omp agent-terminal extension", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       {
         toolName: "bash",
@@ -289,13 +303,13 @@ describe("omp agent-terminal extension", () => {
       },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    const env = envOf(result)
+    const env = envOf(outcome)
     expect(env["FOO"]).toBe("bar")
     expect(env["HOME"]).toBe("/home/x")
     expect(env["AGENT_TERMINAL_SCOPE"]).toBe("sess-123")
-    expect(result?.input?.["command"]).toBe("make test")
-    expect(result?.input?.["timeout"]).toBe(42)
-    expect(result?.input?.["cwd"]).toBe("/tmp/project")
+    expect(outcome.result?.input?.["command"]).toBe("make test")
+    expect(outcome.result?.input?.["timeout"]).toBe(42)
+    expect(outcome.result?.input?.["cwd"]).toBe("/tmp/project")
   })
 
   it("falls back to process PATH and keeps host entries when env.PATH is absent", () => {
@@ -303,12 +317,14 @@ describe("omp agent-terminal extension", () => {
     process.env["PATH"] = "/usr/local/bin:/usr/bin"
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi" } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    const parts = pathParts(envOf(result)["PATH"] as string)
+    // Compare the constructed PATH value exactly: pathParts retains empty
+    // components, so a trailing ":" (CWD) cannot slip through.
+    const parts = pathParts(envOf(outcome)["PATH"] as string)
     expect(parts).toEqual([
       join(root, "bin", "zellij"),
       join(root, "bin", "linux-x64"),
@@ -322,22 +338,23 @@ describe("omp agent-terminal extension", () => {
     process.env["PATH"] = "/usr/local/bin:/usr/bin"
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi", env: { PATH: "" } } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
     // `??` (not `||`): an explicit empty PATH stays the base, so no process
-    // PATH entry leaks in.
-    const parts = pathParts(envOf(result)["PATH"] as string)
+    // PATH entry leaks in. Compare the constructed value exactly.
+    const parts = pathParts(envOf(outcome)["PATH"] as string)
     expect(parts).toEqual([join(root, "bin", "zellij"), join(root, "bin", "linux-x64")])
+    expect(parts).not.toContain("")
   })
 
   it("prepends bundled dirs to a supplied env.PATH without duplicates", () => {
     const root = createPackageLayout({ withZellij: true })
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       {
         toolName: "bash",
@@ -348,7 +365,7 @@ describe("omp agent-terminal extension", () => {
       },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    const parts = pathParts(envOf(result)["PATH"] as string)
+    const parts = pathParts(envOf(outcome)["PATH"] as string)
     expect(parts).toEqual([join(root, "bin", "zellij"), join(root, "bin", "linux-x64"), "/opt/bin"])
   })
 
@@ -357,52 +374,53 @@ describe("omp agent-terminal extension", () => {
     process.env["PATH"] = "/usr/bin"
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi" } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    const parts = pathParts(envOf(result)["PATH"] as string)
+    const parts = pathParts(envOf(outcome)["PATH"] as string)
     expect(parts).toEqual([join(root, "bin", "linux-x64"), "/usr/bin"])
   })
 
-  it("does not throw when sessionManager is missing, leaves scope unset, and still handles PATH", () => {
+  it("handles every unavailable sessionManager shape with one diagnostic per extension", () => {
     const root = createPackageLayout()
-    const diagnostics: string[] = []
-    const { api, handlers } = createFakeApi()
-    loadExtension(api, {
-      packageRoot: root,
-      platform: "linux",
-      arch: "x64",
-      stderr: (message) => diagnostics.push(message),
-    })
-    const result = invokeToolCall(handlers, { toolName: "bash", input: { command: "echo hi" } })
-    const env = envOf(result)
-    expect(env["AGENT_TERMINAL_SCOPE"]).toBeUndefined()
-    expect(pathParts(env["PATH"] as string)[0]).toBe(join(root, "bin", "linux-x64"))
-    expect(diagnostics).toHaveLength(1)
-    expect(diagnostics[0]).toContain("no session id available from omp")
-    // The warning is emitted once, not per call.
-    invokeToolCall(handlers, { toolName: "bash", input: { command: "echo hi" } })
-    expect(diagnostics).toHaveLength(1)
-  })
-
-  it("treats a non-function or empty getSessionId as unavailable", () => {
-    const root = createPackageLayout()
-    const { api, handlers } = createFakeApi()
-    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const emptyResult = invokeToolCall(
-      handlers,
-      { toolName: "bash", input: { command: "echo hi" } },
-      { sessionManager: { getSessionId: () => "" } },
-    )
-    expect(envOf(emptyResult)["AGENT_TERMINAL_SCOPE"]).toBeUndefined()
-    const nonFunctionResult = invokeToolCall(
-      handlers,
-      { toolName: "bash", input: { command: "echo hi" } },
-      { sessionManager: { getSessionId: "not-a-function" as never } },
-    )
-    expect(envOf(nonFunctionResult)["AGENT_TERMINAL_SCOPE"]).toBeUndefined()
+    const shapes: Array<{ name: string; ctx: ToolCallCtx }> = [
+      { name: "missing", ctx: {} },
+      { name: "empty-id", ctx: { sessionManager: { getSessionId: () => "" } } },
+      {
+        name: "non-function",
+        ctx: { sessionManager: { getSessionId: "not-a-function" as never } },
+      },
+    ]
+    for (const shape of shapes) {
+      // Fresh extension per shape: each carries its own warning-dedup state.
+      const diagnostics: string[] = []
+      const { api, handlers } = createFakeApi()
+      loadExtension(api, {
+        packageRoot: root,
+        platform: "linux",
+        arch: "x64",
+        stderr: (message) => diagnostics.push(message),
+      })
+      for (let call = 0; call < 2; call++) {
+        expect(() =>
+          invokeToolCall(handlers, { toolName: "bash", input: { command: "echo hi" } }, shape.ctx),
+        ).not.toThrow()
+        const outcome = invokeToolCall(
+          handlers,
+          { toolName: "bash", input: { command: "echo hi" } },
+          shape.ctx,
+        )
+        const env = envOf(outcome)
+        // No scope injection, but the bundled PATH is still handled.
+        expect(env["AGENT_TERMINAL_SCOPE"]).toBeUndefined()
+        expect(pathParts(env["PATH"] as string)[0]).toBe(join(root, "bin", "linux-x64"))
+      }
+      // Exactly one diagnostic per extension, emitted on the first call only.
+      expect(diagnostics).toHaveLength(1)
+      expect(diagnostics[0]).toContain("no session id available from omp")
+    }
   })
 
   it("does nothing on non-linux platforms and reports a diagnostic", () => {
@@ -461,15 +479,37 @@ describe("omp agent-terminal extension", () => {
     const root = createPackageLayout({ withZellij: true })
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    // A working extension means isExecutableFile (Bun.spawnSync test -x)
+    // A working extension means isExecutableFile (test -f and test -x)
     // accepted the bundled binaries; the PATH revision also proves the
     // tool_call handler is live.
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi" } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    expect(pathParts(envOf(result)["PATH"] as string)[0]).toBe(join(root, "bin", "zellij"))
+    expect(pathParts(envOf(outcome)["PATH"] as string)[0]).toBe(join(root, "bin", "zellij"))
+  })
+
+  it("executable guard rejects a directory even when it is executable", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-agent-terminal-dir-"))
+    tempRoots.push(root)
+    const binDir = join(root, "bin", "linux-x64")
+    mkdirSync(binDir, { recursive: true, mode: 0o755 })
+    // The "binary" is a directory with execute bits: `test -x` alone would
+    // pass, but the regular-file requirement must reject it.
+    mkdirSync(join(binDir, "agent-terminal"), { mode: 0o755 })
+    const diagnostics: string[] = []
+    const { api, handlers } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "linux",
+      arch: "x64",
+      stderr: (message) => diagnostics.push(message),
+    })
+    expect(diagnostics).toEqual([
+      `[agent-terminal] bundled executable is missing or not executable: ${join(binDir, "agent-terminal")}`,
+    ])
+    expect(handlers.size).toBe(0)
   })
 
   it("executable guard detects a non-executable binary and refuses to load", () => {
@@ -517,12 +557,12 @@ describe("omp agent-terminal extension", () => {
     process.env["PATH"] = "/usr/bin"
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const result = invokeToolCall(
+    const outcome = invokeToolCall(
       handlers,
       { toolName: "bash", input: { command: "echo hi" } },
       { sessionManager: { getSessionId: () => "sess-123" } },
     )
-    const parts = pathParts(envOf(result)["PATH"] as string)
+    const parts = pathParts(envOf(outcome)["PATH"] as string)
     // The literal space survives and the bundled binary dir is still found
     // ahead of the process PATH.
     expect(parts).toEqual([join(root, "bin", "linux-x64"), "/usr/bin"])

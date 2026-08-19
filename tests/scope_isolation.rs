@@ -15,10 +15,11 @@
 //! must leave no job and no owned `zellij` session behind.
 
 use std::{
+    collections::HashMap,
     error::Error,
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
 };
 
 use agent_terminal::paths::{project_digest, scope_digest};
@@ -29,19 +30,17 @@ use tempfile::TempDir;
 /// `stop` returns promptly without needing the pane-close fallback.
 const LOOP: &str = "trap \"exit 0\" INT; while :; do sleep 1; done";
 
-/// Locates the pinned `zellij` binary: `$ZELLIJ_BIN`, then the repo cache
-/// under `~/.cache/agent-terminal-zellij/zellij-0.44.3`, then `zellij` on
-/// `PATH`. Returns `None` when no candidate resolves.
+/// Locates a usable `zellij` binary: a validated `$ZELLIJ_BIN`, then
+/// `zellij` on `PATH`. Each candidate must resolve to an existing regular
+/// file; the fixture canonicalizes the winner before symlinking it into the
+/// private bin directory, so relative paths stay valid. Returns `None` when
+/// no candidate resolves.
 #[must_use]
 fn locate_zellij() -> Option<PathBuf> {
     std::env::var_os("ZELLIJ_BIN")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".cache/agent-terminal-zellij/zellij-0.44.3"))
-                .filter(|path| path.is_file())
-                .or_else(which_zellij)
-        })
+        .filter(|candidate| candidate.is_file())
+        .or_else(which_zellij)
 }
 
 #[must_use]
@@ -81,6 +80,9 @@ impl Fixture {
         // e2e gates use for their bundled `bin/zellij/zellij`.
         let bin = TempDir::new()?;
         let zellij_dir = bin.path().canonicalize()?;
+        // The located candidate may be relative or itself a symlink; resolve
+        // it first so the private link always points at the real file.
+        let zellij = zellij.canonicalize()?;
         let link = zellij_dir.join("zellij");
         std::os::unix::fs::symlink(zellij, &link)?;
         let host_path = format!(
@@ -128,6 +130,64 @@ impl Fixture {
         }
         command.args(args);
         command
+    }
+}
+
+/// RAII cleanup guard for the spawned `start` children. On drop it first
+/// waits for every in-flight `start` process (so a finished `start` cannot
+/// respawn a session after cleanup), then stops this fixture's job in each
+/// scope's derived socket namespace (`/tmp/agent-terminal-<scope-digest>`,
+/// the same derivation the CLI uses) and removes those socket directories.
+/// Used for failure paths after an assertion or command error; the normal
+/// path already stops every job explicitly and asserts the sessions are
+/// gone. Drop performs no panicking work so it stays safe under unwind.
+struct ScopeGuard {
+    fixture: Fixture,
+    children: HashMap<String, Child>,
+}
+
+impl ScopeGuard {
+    fn new(fixture: Fixture) -> Self {
+        Self {
+            fixture,
+            children: HashMap::new(),
+        }
+    }
+
+    /// Waits for a spawned child, removes it from the guard's map, reaps it,
+    /// and parses its JSON response. Remaining children stay registered so
+    /// drop can wait for them if a later step fails.
+    fn wait_for(&mut self, scope: &str, context: &str) -> Result<Value, Box<dyn Error>> {
+        let child = self
+            .children
+            .remove(scope)
+            .ok_or_else(|| format!("no spawned child for scope {scope}"))?;
+        let output = child.wait_with_output()?;
+        Ok(parse_ok(&output, context))
+    }
+}
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        // Wait for every in-flight `start` before touching the sessions: a
+        // finished `start` can no longer respawn a session after the cleanup
+        // below runs.
+        for child in self.children.values_mut() {
+            let _ = child.wait();
+        }
+        // Per scope, stop this project's job (a no-op once it is already
+        // stopped or never started), then remove the scope's derived socket
+        // directory. Removing is safe because the stop already killed any
+        // live session, and removing an absent directory is a no-op.
+        for scope in ["A", "B"] {
+            let _ = self
+                .fixture
+                .command(Some(scope), Some(scope), &["stop", "server"])
+                .output();
+            let socket_dir =
+                std::env::temp_dir().join(format!("agent-terminal-{}", scope_digest(scope)));
+            let _ = fs::remove_dir_all(&socket_dir);
+        }
     }
 }
 
@@ -208,37 +268,43 @@ fn two_concurrent_scopes_never_collide() -> Result<(), Box<dyn Error>> {
     let zellij = locate_zellij().unwrap_or_default();
     assert!(
         zellij.is_file(),
-        "no Zellij binary found: set ZELLIJ_BIN, install the pinned binary at \
-         ~/.cache/agent-terminal-zellij/zellij-0.44.3, or add zellij to PATH"
+        "no Zellij binary found: set ZELLIJ_BIN or add zellij to PATH"
     );
     let fixture = Fixture::new(&zellij)?;
+    let mut guard = ScopeGuard::new(fixture);
 
     // Two concurrent `start` processes in different scopes share the state
     // root, socket namespace, project, and job name. The scope comes from
     // `PI_SESSION_ID` alone (`AGENT_TERMINAL_SCOPE` unset) — the exact
     // fallback the pi host adapter relies on.
-    let first_start = fixture
+    let first_start = guard
+        .fixture
         .command(
             None,
             Some("A"),
             &["start", "server", "--", "/bin/sh", "-c", LOOP],
         )
         .spawn()?;
-    let second_start = fixture
+    // Register immediately: if the second spawn fails, the guard must still
+    // reap and clean up after this in-flight start.
+    guard.children.insert("A".to_owned(), first_start);
+    let second_start = guard
+        .fixture
         .command(
             None,
             Some("B"),
             &["start", "server", "--", "/bin/sh", "-c", LOOP],
         )
         .spawn()?;
-    let first_body = parse_ok(&first_start.wait_with_output()?, "start server (scope A)");
-    let second_body = parse_ok(&second_start.wait_with_output()?, "start server (scope B)");
+    guard.children.insert("B".to_owned(), second_start);
+    let first_body = guard.wait_for("A", "start server (scope A)")?;
+    let second_body = guard.wait_for("B", "start server (scope B)")?;
     assert_eq!(first_body["state"], "running", "scope A start body");
     assert_eq!(second_body["state"], "running", "scope B start body");
 
     // Each scope sees exactly its own running job; an unrelated scope sees
     // nothing.
-    let first_list = run_ok(&fixture, "A", Some("A"), &["list"])?;
+    let first_list = run_ok(&guard.fixture, "A", Some("A"), &["list"])?;
     assert_eq!(
         first_list["jobs"],
         Value::Array(vec![Value::Object(
@@ -249,7 +315,7 @@ fn two_concurrent_scopes_never_collide() -> Result<(), Box<dyn Error>> {
         )]),
         "scope A list"
     );
-    let second_list = run_ok(&fixture, "B", Some("B"), &["list"])?;
+    let second_list = run_ok(&guard.fixture, "B", Some("B"), &["list"])?;
     assert_eq!(
         second_list["jobs"],
         Value::Array(vec![Value::Object(
@@ -260,11 +326,11 @@ fn two_concurrent_scopes_never_collide() -> Result<(), Box<dyn Error>> {
         )]),
         "scope B list"
     );
-    let other_list = run_ok(&fixture, "other", Some("other"), &["list"])?;
+    let other_list = run_ok(&guard.fixture, "other", Some("other"), &["list"])?;
     assert_eq!(other_list["jobs"], Value::Array(vec![]), "scope other list");
 
     // Scope A can read its own job's running screen.
-    let first_read = run_ok(&fixture, "A", Some("A"), &["read", "server"])?;
+    let first_read = run_ok(&guard.fixture, "A", Some("A"), &["read", "server"])?;
     assert_eq!(first_read["state"], "running", "scope A read");
     assert!(
         first_read["screen"].is_string(),
@@ -272,15 +338,15 @@ fn two_concurrent_scopes_never_collide() -> Result<(), Box<dyn Error>> {
     );
 
     // Stopping the job in each scope clears that scope's state.
-    run_ok(&fixture, "A", Some("A"), &["stop", "server"])?;
-    run_ok(&fixture, "B", Some("B"), &["stop", "server"])?;
-    let first_final = run_ok(&fixture, "A", Some("A"), &["list"])?;
+    run_ok(&guard.fixture, "A", Some("A"), &["stop", "server"])?;
+    run_ok(&guard.fixture, "B", Some("B"), &["stop", "server"])?;
+    let first_final = run_ok(&guard.fixture, "A", Some("A"), &["list"])?;
     assert_eq!(
         first_final["jobs"],
         Value::Array(vec![]),
         "scope A final list"
     );
-    let second_final = run_ok(&fixture, "B", Some("B"), &["list"])?;
+    let second_final = run_ok(&guard.fixture, "B", Some("B"), &["list"])?;
     assert_eq!(
         second_final["jobs"],
         Value::Array(vec![]),
@@ -293,7 +359,11 @@ fn two_concurrent_scopes_never_collide() -> Result<(), Box<dyn Error>> {
         let socket_dir =
             std::env::temp_dir().join(format!("agent-terminal-{}", scope_digest(scope)));
         assert!(
-            no_sessions_for_project(&fixture.zellij_dir, &socket_dir, &fixture.project)?,
+            no_sessions_for_project(
+                &guard.fixture.zellij_dir,
+                &socket_dir,
+                &guard.fixture.project
+            )?,
             "scope {scope}: owned Zellij session was left behind"
         );
     }

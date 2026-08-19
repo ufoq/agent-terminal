@@ -1,3 +1,8 @@
+//! Shared black-box CLI test harness, compiled into every integration-test
+//! binary. Individual binaries use different subsets of this surface, so
+//! per-binary dead-code warnings are expected noise.
+#![allow(dead_code)]
+
 use std::{
     ffi::OsString,
     fmt::Display,

@@ -112,17 +112,19 @@ cleanup() {
   # digests back from our own state root — never by globbing
   # /tmp/agent-terminal-* or killing sessions by global wildcard (other runs'
   # socket dirs would be swept). Zellij servers in those dirs are killed
-  # first so no detached session survives; the dirs are then removed.
-  if [[ -d $STATE_DIR/scopes ]]; then
+  # first so no detached session survives; the dirs are then removed. The
+  # bundled zellij is used: a host zellij is not required, and only the
+  # bundled server can exist in this run's socket dirs.
+  if [[ -d $STATE_DIR/scopes && -n ${BUNDLED_ZELLIJ:-} && -x $BUNDLED_ZELLIJ ]]; then
     for scope_root in "$STATE_DIR"/scopes/*; do
       [[ -d $scope_root ]] || continue
       digest="$(basename "$scope_root")"
       at_sock="/tmp/agent-terminal-$digest"
       [[ -d $at_sock ]] || continue
-      sessions="$(env ZELLIJ_SOCKET_DIR="$at_sock" zellij list-sessions --short --no-formatting 2>/dev/null || true)"
+      sessions="$(env ZELLIJ_SOCKET_DIR="$at_sock" "$BUNDLED_ZELLIJ" list-sessions --short --no-formatting 2>/dev/null || true)"
       while IFS= read -r session; do
         if [[ $session == agent-terminal-* ]]; then
-          env ZELLIJ_SOCKET_DIR="$at_sock" zellij kill-session "$session" >/dev/null 2>&1 || true
+          env ZELLIJ_SOCKET_DIR="$at_sock" "$BUNDLED_ZELLIJ" kill-session "$session" >/dev/null 2>&1 || true
         fi
       done <<<"$sessions"
       rm -rf "$at_sock" 2>/dev/null || true
@@ -153,7 +155,7 @@ if [[ ! $FIXTURE_HOLD_SECS =~ ^[0-9]+$ ]] || (( FIXTURE_HOLD_SECS < 30 )); then
 fi
 
 missing=()
-for tool in bun curl python3 zellij; do
+for tool in bun curl python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     missing+=("$tool")
   fi
@@ -163,14 +165,18 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 
 # The agent-terminal binary under test. Defaults to the musl release build
-# (what the npm bundle packages); AGENT_TERMINAL_BIN overrides it.
+# (what the npm bundle packages); AGENT_TERMINAL_BIN overrides it. An
+# explicit override is validated up front; the default is validated only
+# after the preflight build below has had a chance to produce it (and is
+# skipped entirely with AGENT_TERMINAL_SKIP_PREFLIGHT=1, in which case the
+# pre-existing binary must be valid).
 if [[ -n ${AGENT_TERMINAL_BIN:-} ]]; then
   AT_BIN="$AGENT_TERMINAL_BIN"
+  if [[ ! -x $AT_BIN ]]; then
+    fail "agent-terminal binary not found: $AT_BIN (build it or set AGENT_TERMINAL_BIN)"
+  fi
 else
   AT_BIN="$REPO_ROOT/target/x86_64-unknown-linux-musl/release/agent-terminal"
-fi
-if [[ ! -x $AT_BIN ]]; then
-  fail "agent-terminal binary not found: $AT_BIN (build it or set AGENT_TERMINAL_BIN)"
 fi
 
 # The agent wrapper + the bundle for the agent under test. The build produces
@@ -208,9 +214,23 @@ if [[ ! -f $EXTENSION_PATH ]]; then
   fail "extension dist missing after build: $EXTENSION_PATH"
 fi
 BUNDLED_ZELLIJ_DIR="$BUNDLE_PACKAGE/bin/zellij"
-if [[ ! -x $BUNDLED_ZELLIJ_DIR/zellij ]]; then
-  fail "bundled zellij missing after build: $BUNDLED_ZELLIJ_DIR/zellij"
+BUNDLED_ZELLIJ="$BUNDLED_ZELLIJ_DIR/zellij"
+if [[ ! -x $BUNDLED_ZELLIJ ]]; then
+  fail "bundled zellij missing after build: $BUNDLED_ZELLIJ"
 fi
+
+# The default binary is validated only now: the preflight build above (or a
+# previously built artifact when SKIP_PREFLIGHT=1) is what produces it.
+if [[ -z ${AGENT_TERMINAL_BIN:-} && ! -x $AT_BIN ]]; then
+  fail "agent-terminal binary not found: $AT_BIN (build it or set AGENT_TERMINAL_BIN)"
+fi
+# The harness resolves agent-terminal from the bundle's
+# bin/linux-x64/agent-terminal (pi/npm/src/index.ts, omp/npm/src/index.ts),
+# so the installed copy must be the binary under test: installing after the
+# build keeps the agent-side cross-checks and the host-side cross-checks on
+# the exact same binary.
+BUNDLE_AT_BIN="$BUNDLE_PACKAGE/bin/linux-x64/agent-terminal"
+install -m 0755 "$AT_BIN" "$BUNDLE_AT_BIN"
 
 install -d -m 0700 \
   "$SANDBOX" \
@@ -275,15 +295,24 @@ PROVIDER_B="$SANDBOX/provider-b.ts"
 
 # The two-session prompt drives the same lifecycle as e2e-pi.sh's prompt,
 # with the hold step inserted between start and the first read. The probe
-# block differs per agent (pi: PI_SESSION_ID; omp: injected
-# AGENT_TERMINAL_SCOPE plus an explicit override probe), so step numbering is
-# generated like e2e-pi.sh does.
+# steps differ per agent (pi: PI_SESSION_ID; omp: injected
+# AGENT_TERMINAL_SCOPE plus an explicit override probe), so the prompt's step
+# count and numbering shift accordingly: 10 lifecycle steps are written once
+# with __STEP_N__ markers and renumbered below.
 if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
   TOTAL_STEPS=12
   LIFECYCLE_OFFSET=2
+  # Scope shell reference for the start-command pane marker (scope-marker:):
+  # the fixture exact-matches the start command, and the marker must expand
+  # to the scope of the session that spawned the pane. omp exposes it via the
+  # extension-injected AGENT_TERMINAL_SCOPE; pi via PI_SESSION_ID. The
+  # single-quoted value is substituted verbatim into the prompt text (the
+  # agent types it into the Bash tool, the job shell expands it).
+  SCOPE_MARKER_ENV='$AGENT_TERMINAL_SCOPE'
 else
   TOTAL_STEPS=11
   LIFECYCLE_OFFSET=1
+  SCOPE_MARKER_ENV='$PI_SESSION_ID'
 fi
 
 readonly PROMPT_FILE="$SANDBOX/prompt.md"
@@ -312,7 +341,7 @@ PROMPT_PROBE
   fi
   cat <<'PROMPT_LIFECYCLE'
 __STEP_1__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
-__STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
+__STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; printf "scope-marker:%s\n" "__SCOPE_MARKER_ENV__"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
 __STEP_3__. Bash: `sleep __HOLD_SECS__` (wait for the other session's hold to overlap; do not skip this step).
 __STEP_4__. Bash: `agent-terminal read __JOB_NAME__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
 __STEP_5__. Bash: send the literal text hello-e2e with `agent-terminal send __JOB_NAME__ -- hello-e2e`.
@@ -326,7 +355,7 @@ Do not modify repository files. After all __TOTAL_STEPS__ steps pass, end your f
 PROMPT_LIFECYCLE
 } >"$PROMPT_FILE"
 
-sed_exprs=(-e "s/__TOTAL_STEPS__/$TOTAL_STEPS/g" -e "s/__JOB_NAME__/$JOB_NAME/g" -e "s|__WORKDIR__|$WORKDIR|g" -e "s/__HOLD_SECS__/$FIXTURE_HOLD_SECS/g")
+sed_exprs=(-e "s/__TOTAL_STEPS__/$TOTAL_STEPS/g" -e "s/__JOB_NAME__/$JOB_NAME/g" -e "s|__WORKDIR__|$WORKDIR|g" -e "s/__HOLD_SECS__/$FIXTURE_HOLD_SECS/g" -e "s/__SCOPE_MARKER_ENV__/$SCOPE_MARKER_ENV/g")
 for i in $(seq 1 10); do
   sed_exprs+=(-e "s/__STEP_${i}__/$((i + LIFECYCLE_OFFSET))/g")
 done
@@ -575,21 +604,59 @@ for scope in "$SESSION_A" "$SESSION_B"; do
 done
 
 phase "cross-checking the held job's screen"
+# Each job's pane prints a scope marker (`scope-marker:<scope>`) right after
+# prompt-ready, so the held panes of the two identically named jobs are
+# distinguishable: read must report state running, the queried scope's marker,
+# and NO marker of the peer scope. Reads are polled like the list check
+# above: while the agent's own controller operation is still in flight the
+# per-scope state lock is busy ("another controller operation is in
+# progress", exit 1), which is transient and retried; permanent failures
+# (job vanished, non-JSON output, assertion failures) fail immediately.
 for scope in "$SESSION_A" "$SESSION_B"; do
   tag="$(scope_tag "$scope")"
-  if ! run_scope_cli "$scope" read "$JOB_NAME" >"$ARTIFACT_DIR/scope-read-$tag.json"; then
-    cat "$ARTIFACT_DIR/scope-cli.err.log" >&2
-    fail "agent-terminal read failed for scope $tag"
+  peer_scope="$(if [[ $scope == "$SESSION_A" ]]; then printf '%s' "$SESSION_B"; else printf '%s' "$SESSION_A"; fi)"
+  seen=false
+  for _ in $(seq 1 60); do
+    if ! run_scope_cli "$scope" read "$JOB_NAME" >"$ARTIFACT_DIR/scope-read-$tag.json"; then
+      # The CLI always reports errors as a JSON response on stdout with a
+      # nonzero exit. A busy controller lock (exit 1, code lock_busy) is
+      # transient while the agent's own operation is in flight: retry it.
+      # Any other error (job vanished, zellij failure) is permanent: fail.
+      if grep -q '"code":"lock_busy"' "$ARTIFACT_DIR/scope-read-$tag.json" 2>/dev/null; then
+        sleep 0.5
+        continue
+      fi
+      cat "$ARTIFACT_DIR/scope-read-$tag.json" >&2
+      cat "$ARTIFACT_DIR/scope-cli.err.log" >&2
+      fail "agent-terminal read failed for scope $tag"
+    fi
+    if SCOPE="$scope" PEER_SCOPE="$peer_scope" JSON_FILE="$ARTIFACT_DIR/scope-read-$tag.json" bun -e '
+      const body = await Bun.file(process.env.JSON_FILE).json()
+      if (typeof body !== "object" || body === null || Array.isArray(body) || body.status !== "ok") {
+        throw new Error(`unexpected read response: ${JSON.stringify(body)}`)
+      }
+      if (body.state !== "running") {
+        throw new Error(`expected state running, got ${JSON.stringify(body.state)}`)
+      }
+      if (typeof body.screen !== "string" || !body.screen.includes("prompt-ready")) {
+        throw new Error(`screen lacks prompt-ready: ${JSON.stringify(body.screen)}`)
+      }
+      if (!body.screen.includes(`scope-marker:${process.env.SCOPE}`)) {
+        throw new Error(`screen lacks own scope marker scope-marker:${process.env.SCOPE}: ${JSON.stringify(body.screen)}`)
+      }
+      if (body.screen.includes(`scope-marker:${process.env.PEER_SCOPE}`)) {
+        throw new Error(`screen leaks the peer scope marker scope-marker:${process.env.PEER_SCOPE}`)
+      }
+    ' 2>"$ARTIFACT_DIR/scope-read-$tag.check.log"; then
+      seen=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ $seen != true ]]; then
+    cat "$ARTIFACT_DIR/scope-read-$tag.check.log" >&2
+    fail "scope $tag never showed a running held pane with its own scope marker"
   fi
-  JSON_FILE="$ARTIFACT_DIR/scope-read-$tag.json" bun -e '
-    const body = await Bun.file(process.env.JSON_FILE).json()
-    if (typeof body !== "object" || body === null || Array.isArray(body) || body.status !== "ok") {
-      throw new Error(`unexpected read response: ${JSON.stringify(body)}`)
-    }
-    if (typeof body.screen !== "string" || !body.screen.includes("prompt-ready")) {
-      throw new Error(`screen lacks prompt-ready: ${JSON.stringify(body)}`)
-    }
-  '
 done
 
 # Both sessions complete their lifecycle independently; the fixture fails the
@@ -597,67 +664,232 @@ done
 # final list.
 phase "waiting for both sessions to finish"
 for id in a b; do
-  if ! wait "${AGENT_PIDS[$id]}"; then
+  wait_status=0
+  wait "${AGENT_PIDS[$id]}" || wait_status=$?
+  # The session was reaped; drop it from the trap's kill set BEFORE any
+  # diagnostics, so the EXIT cleanup (or a signal during it) can never
+  # signal a PID the kernel may already have recycled.
+  unset 'AGENT_PIDS['$id']'
+  if (( wait_status != 0 )); then
     cat "$ARTIFACT_DIR/session-$id.stderr.log" >&2
     cat "$ARTIFACT_DIR/session-$id.jsonl" >&2
     fail "agent session $id failed"
   fi
 done
 
-# Final transcript assertions.
+# Final transcript assertions. The transcript is parsed as JSONL, never
+# grepped: Bash tool calls and their results are matched in the order they
+# STARTED (tool_execution_start order — the fixture emits one bash call per
+# step, so start order is the lifecycle order), the probe prefix and the full
+# pi/omp lifecycle must appear in order (read steps may retry with the same
+# command, exactly like the fixture), E2E_SUCCESS must be a standalone line
+# in the final assistant message AFTER the last tool result, and
+# E2E_FIXTURE_ERROR anywhere fails the run.
 phase "verifying transcripts"
 for id in a b; do
   transcript="$ARTIFACT_DIR/session-$id.jsonl"
-  for pattern in \
-    "agent-terminal list" \
-    "agent-terminal start server" \
-    "agent-terminal read server" \
-    "agent-terminal send server -- hello-e2e" \
-    "agent-terminal press server -- Enter" \
-    "agent-terminal stop server"; do
-    if ! grep -qF -- "$pattern" "$transcript"; then
-      fail "session $id transcript lacks: $pattern"
-    fi
-  done
-  if ! grep -q 'E2E_SUCCESS' "$transcript"; then
-    fail "session $id transcript lacks E2E_SUCCESS"
-  fi
-  if grep -q 'E2E_FIXTURE_ERROR' "$transcript"; then
-    fail "session $id transcript contains E2E_FIXTURE_ERROR"
-  fi
-  # The final list of EACH session must be empty: with a shared state root,
-  # only the scope digest separates the two sessions, so a leaked job in the
-  # other scope would show up here.
-  JSON_FILE="$transcript" bun -e '
+  if ! JSON_FILE="$transcript" AGENT="$AGENT_TERMINAL_AGENT" JOB_NAME="$JOB_NAME" HOLD_SECS="$FIXTURE_HOLD_SECS" bun -e '
     const lines = (await Bun.file(process.env.JSON_FILE).text()).split("\n").filter(Boolean)
+    const agent = process.env.AGENT
+    const job = process.env.JOB_NAME
+    // parseInt matches the fixture HOLD_SECS normalization exactly.
+    const hold = String(parseInt(process.env.HOLD_SECS, 10))
+    if (agent !== "pi" && agent !== "omp") throw new Error(`unexpected agent: ${agent}`)
+    if (job === "" || Number.isNaN(parseInt(process.env.HOLD_SECS, 10))) {
+      throw new Error("missing JOB_NAME/HOLD_SECS")
+    }
+
+    // The pane marker env var, matching the SCOPE_MARKER_ENV used by
+    // e2e-fixture.ts and the scopeMarkerEnv of e2e-verify.ts byte-for-byte.
+    const scopeEnv = agent === "omp" ? "AGENT_TERMINAL_SCOPE" : "PI_SESSION_ID"
+    const start = `agent-terminal start ${job} -- /bin/bash -lc '"'"'printf "prompt-ready\\n"; printf "scope-marker:%s\\n" "$${scopeEnv}"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'"'"'`
+    const probes =
+      agent === "omp"
+        ? ["printenv AGENT_TERMINAL_SCOPE", "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE"]
+        : ["printenv PI_SESSION_ID"]
+    // The expected lifecycle, in order, with the same per-step checks as the
+    // fixture and e2e-verify.ts. Only steps whose check may legitimately fail
+    // transiently (the three reads: the pane renders asynchronously) retry
+    // with the identical command.
+    const steps = [
+      {
+        cmd: "agent-terminal list",
+        check: (b) => Array.isArray(b.jobs) && b.jobs.length === 0,
+      },
+      {
+        cmd: start,
+        check: (b) => b.state === "running",
+      },
+      { cmd: `sleep ${hold}`, hold: true },
+      {
+        cmd: `agent-terminal read ${job}`,
+        check: (b) => typeof b.screen === "string" && b.screen.includes("prompt-ready"),
+      },
+      { cmd: `agent-terminal send ${job} -- hello-e2e`, check: () => true },
+      {
+        cmd: `agent-terminal read ${job}`,
+        check: (b) => typeof b.screen === "string" && b.screen.includes("first:hello-e2e"),
+      },
+      { cmd: `agent-terminal press ${job} -- Enter`, check: () => true },
+      {
+        cmd: `agent-terminal read ${job}`,
+        check: (b) => b.state === "exited" && b.exit_code === 0 && typeof b.screen === "string" && b.screen.includes("second:"),
+      },
+      { cmd: `agent-terminal stop ${job}`, check: () => true },
+      {
+        cmd: "agent-terminal list",
+        check: (b) => Array.isArray(b.jobs) && b.jobs.length === 0,
+      },
+    ]
+
+    // Collect completed bash tool calls in START order.
     const pending = new Map()
-    let lastList = null
+    const calls = []
     for (const line of lines) {
       const ev = JSON.parse(line)
       if (ev.type === "tool_execution_start" && ev.toolName === "bash" && typeof ev.args?.command === "string") {
         pending.set(ev.toolCallId, ev.args.command)
       } else if (ev.type === "tool_execution_end" && pending.has(ev.toolCallId)) {
-        const command = pending.get(ev.toolCallId)
+        calls.push({ command: pending.get(ev.toolCallId), result: ev.result })
         pending.delete(ev.toolCallId)
-        if (command.trim() === "agent-terminal list") {
-          lastList = ev
-        }
       }
     }
-    if (!lastList) throw new Error("no final agent-terminal list tool call found")
-    const result = lastList.result
-    const content = Array.isArray(result?.content) ? result.content : []
-    const text = content
-      .filter((p) => typeof p === "object" && p !== null && p.type === "text")
-      .map((p) => p.text)
-      .join("")
-    // omp bash appends "\n\nWall time: X seconds..." after the output.
-    const trimmed = text.trim().replace(/\n\nWall time:.*$/s, "").trim()
-    const body = JSON.parse(trimmed)
+    if (pending.size > 0) {
+      throw new Error(`a bash tool call did not complete: ${Array.from(pending.values()).join(", ")}`)
+    }
+
+    function outputText(result) {
+      const content = result && typeof result === "object" && Array.isArray(result.content) ? result.content : []
+      for (const part of content) {
+        if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") return part.text
+      }
+      return ""
+    }
+    // omp bash appends "\n\nWall time: X seconds\n\nCommand exited with code N".
+    // Strip the suffix BEFORE trimming, exactly like the fixture and the
+    // verifier: a probe that printed nothing but the Wall-time trailer must
+    // count as empty.
+    function stripped(text) {
+      return text.replace(/\n\nWall time:.*$/s, "").trim()
+    }
+    // Extract the first JSON object from the output, requiring status ok.
+    function parseOk(text) {
+      const trimmed = stripped(text)
+      const jsonStart = trimmed.indexOf("{")
+      if (jsonStart < 0) return null
+      for (let end = jsonStart + 1; end <= trimmed.length; end++) {
+        try {
+          const body = JSON.parse(trimmed.slice(jsonStart, end))
+          if (typeof body === "object" && body !== null && body.status === "ok") return body
+        } catch {}
+      }
+      return null
+    }
+
+    // The scope probes must be the first bash calls, in order.
+    let i = 0
+    for (const probe of probes) {
+      const call = calls[i]
+      if (call === undefined || call.command.trim() !== probe) {
+        throw new Error(`expected probe bash call "${probe}", got ${call === undefined ? "nothing" : JSON.stringify(call.command)}`)
+      }
+      if (stripped(outputText(call.result)) === "") {
+        throw new Error(`probe "${probe}" printed nothing`)
+      }
+      i++
+    }
+
+    // The lifecycle in order, with the same per-step checks and retry policy
+    // as e2e-verify.ts: a read step whose output is successful JSON but does
+    // not yet satisfy the step check may retry with the identical command
+    // (the pane renders asynchronously); any non-ok output is a permanent
+    // failure. Attempts are counted per step and capped at 8, matching the
+    // verifier real-mode cap.
+    let stepIdx = 0
+    let attempts = 0
+    while (i < calls.length) {
+      const step = steps[stepIdx]
+      if (step === undefined) {
+        throw new Error(`extra bash call after the lifecycle: ${calls[i].command}`)
+      }
+      const call = calls[i]
+      if (call.command.trim() !== step.cmd) {
+        throw new Error(`out-of-order bash call at lifecycle step ${stepIdx + 1}: expected "${step.cmd}", got "${call.command.trim()}"`)
+      }
+      i++
+      if (step.hold) {
+        // The sleep step output is irrelevant, exactly like the fixture.
+        stepIdx++
+        attempts = 0
+        continue
+      }
+      const body = parseOk(outputText(call.result))
+      if (body === null) {
+        throw new Error(`lifecycle step ${stepIdx + 1} ("${step.cmd}") result is not an ok status response`)
+      }
+      if (step.check(body)) {
+        stepIdx++
+        attempts = 0
+        continue
+      }
+      attempts++
+      if (attempts >= 8) {
+        throw new Error(`lifecycle step ${stepIdx + 1} ("${step.cmd}") failed ${attempts} attempts`)
+      }
+    }
+    if (stepIdx < steps.length) {
+      const missing = steps.slice(stepIdx).map((s) => s.cmd).join(", ")
+      throw new Error(`lifecycle incomplete; missing: ${missing}`)
+    }
+
+    // E2E_FIXTURE_ERROR must never appear.
+    for (const line of lines) {
+      if (line.includes("E2E_FIXTURE_ERROR")) {
+        throw new Error("E2E_FIXTURE_ERROR found in transcript")
+      }
+    }
+
+    // E2E_SUCCESS must be a standalone line in the final assistant message,
+    // after the last tool result.
+    let lastToolEnd = -1
+    let lastAssistantEnd = -1
+    let lastAssistantHasSuccess = false
+    for (let idx = 0; idx < lines.length; idx++) {
+      const ev = JSON.parse(lines[idx])
+      if (ev.type === "tool_execution_end") lastToolEnd = idx
+      if (ev.type !== "message_end") continue
+      const message = ev.message
+      if (message === null || typeof message !== "object" || message.role !== "assistant") continue
+      const content = message.content
+      const text = typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.filter((p) => p && typeof p === "object" && p.type === "text").map((p) => p.text).join("\n")
+          : ""
+      if (text.trim() === "") continue
+      lastAssistantEnd = idx
+      lastAssistantHasSuccess = text.split(/\r?\n/).some((l) => l.trim() === "E2E_SUCCESS")
+    }
+    if (lastAssistantEnd <= lastToolEnd || !lastAssistantHasSuccess) {
+      throw new Error("no standalone E2E_SUCCESS line in the final assistant message after the last tool result")
+    }
+
+    // The final list of EACH session must be empty: with a shared state root,
+    // only the scope digest separates the two sessions, so a leaked job in
+    // the other scope would show up here. The final bash call is the final
+    // `agent-terminal list` (the matcher above consumed every call in order).
+    const finalCall = calls[calls.length - 1]
+    if (finalCall === undefined || finalCall.command.trim() !== "agent-terminal list") {
+      throw new Error("final bash call is not the final agent-terminal list")
+    }
+    const body = JSON.parse(stripped(outputText(finalCall.result)))
     if (!Array.isArray(body.jobs) || body.jobs.length !== 0) {
       throw new Error(`final list was not empty: ${JSON.stringify(body)}`)
     }
-  '
+  ' 2>"$ARTIFACT_DIR/transcript-$id.check.log"; then
+    cat "$ARTIFACT_DIR/transcript-$id.check.log" >&2
+    fail "session $id transcript verification failed"
+  fi
 done
 
 printf 'Two-session isolation e2e passed.\n'

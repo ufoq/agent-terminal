@@ -1,8 +1,12 @@
 use std::{
     ffi::OsString,
     fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt as _;
 
 use crate::{error::Error, paths::ProjectPaths};
 
@@ -77,9 +81,10 @@ fn user_zellij_config_path(lookup: &dyn Fn(&str) -> Option<OsString>) -> Option<
 /// the wizard. An existing user config is left untouched, and when neither
 /// `XDG_CONFIG_HOME` nor `HOME` resolves the operation is skipped entirely.
 ///
-/// Public so integration tests can drive it with closures instead of mutating
-/// the process environment (which is unsafe on Rust 2024).
-pub fn ensure_user_zellij_config_with(
+/// The file is created atomically with `create_new` (mode 0600 on Unix) so a
+/// config written by a concurrent process is never truncated or overwritten;
+/// `AlreadyExists` is treated as success.
+pub(crate) fn ensure_user_zellij_config_with(
     lookup: &dyn Fn(&str) -> Option<OsString>,
 ) -> Result<(), Error> {
     let Some(config_path) = user_zellij_config_path(lookup) else {
@@ -91,8 +96,8 @@ pub fn ensure_user_zellij_config_with(
     let dir = config_path.parent().ok_or_else(|| Error::StateIo {
         action: "ensure user zellij configuration",
         path: config_path.clone(),
-        source: std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
             "config path has no parent directory",
         ),
     })?;
@@ -102,12 +107,34 @@ pub fn ensure_user_zellij_config_with(
         source,
     })?;
     set_private_dir(dir)?;
-    fs::write(&config_path, CONFIG).map_err(|source| Error::StateIo {
-        action: "ensure user zellij configuration",
-        path: config_path.clone(),
-        source,
-    })?;
-    set_private_file(&config_path)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    match options.open(&config_path) {
+        Ok(mut file) => {
+            file.write_all(CONFIG.as_bytes())
+                .map_err(|source| Error::StateIo {
+                    action: "ensure user zellij configuration",
+                    path: config_path.clone(),
+                    source,
+                })?;
+            file.flush().map_err(|source| Error::StateIo {
+                action: "ensure user zellij configuration",
+                path: config_path.clone(),
+                source,
+            })?;
+            // `mode(0o600)` is filtered by the process umask; re-apply exact
+            // permissions after writing so the file is private regardless.
+            set_private_file(&config_path)
+        }
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(source) => Err(Error::StateIo {
+            action: "ensure user zellij configuration",
+            path: config_path.clone(),
+            source,
+        }),
+    }
 }
 
 /// Ensure the user-level zellij config exists, resolved from the process
@@ -153,4 +180,169 @@ fn set_private_file(path: &Path) -> Result<(), Error> {
 #[cfg(not(unix))]
 fn set_private_file(_path: &Path) -> Result<(), Error> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONFIG, ensure_user_zellij_config_with, user_zellij_config_path};
+    use std::{
+        ffi::OsString,
+        fs,
+        path::{Path, PathBuf},
+    };
+    use tempfile::TempDir;
+
+    /// Builds a lookup closure from a static map of env-var → path.
+    /// Keys absent from the map are treated as unset; `None` values are
+    /// treated as unset (so the caller can explicitly express "not present").
+    fn env_lookup<'a>(
+        envs: &'a [(&'a str, Option<&'a Path>)],
+    ) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |var: &str| {
+            envs.iter()
+                .find(|(key, _)| *key == var)
+                .and_then(|(_, value)| value.map(|path| path.as_os_str().to_os_string()))
+        }
+    }
+
+    #[test]
+    fn xdg_config_home_wins_over_home() {
+        let xdg = PathBuf::from("/xdg");
+        let home = PathBuf::from("/home");
+        let envs = [
+            ("XDG_CONFIG_HOME", Some(xdg.as_path())),
+            ("HOME", Some(home.as_path())),
+        ];
+        let lookup = env_lookup(&envs);
+        assert_eq!(
+            user_zellij_config_path(&lookup),
+            Some(PathBuf::from("/xdg/zellij/config.kdl"))
+        );
+    }
+
+    #[test]
+    fn home_is_fallback_when_xdg_config_home_is_empty() {
+        let home = PathBuf::from("/home");
+        let envs = [
+            ("XDG_CONFIG_HOME", Some(Path::new(""))),
+            ("HOME", Some(home.as_path())),
+        ];
+        let lookup = env_lookup(&envs);
+        assert_eq!(
+            user_zellij_config_path(&lookup),
+            Some(PathBuf::from("/home/.config/zellij/config.kdl"))
+        );
+    }
+
+    #[test]
+    fn empty_home_falls_through_to_none() {
+        let envs = [
+            ("XDG_CONFIG_HOME", Some(Path::new(""))),
+            ("HOME", Some(Path::new(""))),
+        ];
+        let lookup = env_lookup(&envs);
+        assert_eq!(user_zellij_config_path(&lookup), None);
+    }
+
+    #[test]
+    fn both_variables_unset_resolves_to_none() {
+        let envs: [(&str, Option<&Path>); 2] = [("XDG_CONFIG_HOME", None), ("HOME", None)];
+        let lookup = env_lookup(&envs);
+        assert_eq!(user_zellij_config_path(&lookup), None);
+    }
+
+    #[test]
+    fn variables_absent_from_lookup_treated_as_unset() {
+        let envs: [(&str, Option<&Path>); 0] = [];
+        let lookup = env_lookup(&envs);
+        assert_eq!(user_zellij_config_path(&lookup), None);
+    }
+
+    #[test]
+    fn missing_config_created_under_xdg_config_home() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let xdg = temp.path().join("xdg");
+        let envs = [("XDG_CONFIG_HOME", Some(xdg.as_path())), ("HOME", None)];
+        let lookup = env_lookup(&envs);
+
+        ensure_user_zellij_config_with(&lookup)?;
+
+        let config = xdg.join("zellij").join("config.kdl");
+        assert!(config.exists(), "config not created under XDG_CONFIG_HOME");
+        assert_eq!(fs::read_to_string(&config)?, CONFIG);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_config_created_under_home_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let home = temp.path().join("home");
+        let envs = [("XDG_CONFIG_HOME", None), ("HOME", Some(home.as_path()))];
+        let lookup = env_lookup(&envs);
+
+        ensure_user_zellij_config_with(&lookup)?;
+
+        let config = home.join(".config").join("zellij").join("config.kdl");
+        assert!(config.exists(), "config not created under HOME/.config");
+        assert_eq!(fs::read_to_string(&config)?, CONFIG);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_config_left_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let xdg = temp.path().join("xdg");
+        let zellij_dir = xdg.join("zellij");
+        fs::create_dir_all(&zellij_dir)?;
+        let config = zellij_dir.join("config.kdl");
+        let existing = "user settings\nshow_release_notes true\n";
+        fs::write(&config, existing)?;
+        let envs = [("XDG_CONFIG_HOME", Some(xdg.as_path()))];
+        let lookup = env_lookup(&envs);
+
+        ensure_user_zellij_config_with(&lookup)?;
+
+        assert_eq!(fs::read_to_string(&config)?, existing);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_create_second_writer_is_success() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let xdg = temp.path().join("xdg");
+        let envs = [("XDG_CONFIG_HOME", Some(xdg.as_path()))];
+        let lookup = env_lookup(&envs);
+
+        ensure_user_zellij_config_with(&lookup)?;
+        ensure_user_zellij_config_with(&lookup)?;
+
+        let config = xdg.join("zellij").join("config.kdl");
+        assert_eq!(fs::read_to_string(&config)?, CONFIG);
+        Ok(())
+    }
+
+    #[test]
+    fn skipped_when_xdg_config_home_and_home_unset() -> Result<(), Box<dyn std::error::Error>> {
+        let envs: [(&str, Option<&Path>); 0] = [];
+        let lookup = env_lookup(&envs);
+        ensure_user_zellij_config_with(&lookup)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_config_has_0600_mode() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new()?;
+        let xdg = temp.path().join("xdg");
+        let envs = [("XDG_CONFIG_HOME", Some(xdg.as_path()))];
+        let lookup = env_lookup(&envs);
+
+        ensure_user_zellij_config_with(&lookup)?;
+
+        let config = xdg.join("zellij").join("config.kdl");
+        assert_eq!(fs::metadata(&config)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
 }

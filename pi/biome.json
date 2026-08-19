@@ -49,7 +49,9 @@
       "!coverage",
       "!npm/dist",
       "!npm/packages/*/dist",
-      "!npm/packages/*/bin"
+      "!npm/packages/*/bin",
+      "!npm/packages/*/skills",
+      "!bun.lock"
     ]
   }
 }

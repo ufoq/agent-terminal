@@ -17,6 +17,7 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  renameSync,
   rmSync,
   statSync,
 } from "node:fs"
@@ -115,9 +116,27 @@ export async function ensureZellij(packageRoot) {
   const zellijBinDir = join(packageRoot, "bin", "zellij")
   const zellijBinPath = join(zellijBinDir, "zellij")
 
-  if (existsSync(zellijBinPath) && (statSync(zellijBinPath).mode & 0o111) !== 0) {
-    console.log("Using existing bundled Zellij binary.")
-    return
+  if (existsSync(zellijBinPath)) {
+    // Any validation failure (including EACCES on an unreadable file) must
+    // fall through to a staged reinstall, never abort the build.
+    try {
+      const binStat = statSync(zellijBinPath)
+      if (binStat.isFile() && (binStat.mode & 0o111) !== 0) {
+        const existingHash = await sha256File(zellijBinPath)
+        if (existingHash === ZELLIJ_BINARY_SHA256) {
+          if ((binStat.mode & 0o777) !== 0o755) {
+            chmodSync(zellijBinPath, 0o755)
+          }
+          console.log("Using existing bundled Zellij binary.")
+          return
+        }
+        console.log(`Existing bundled Zellij hash mismatch (${existingHash}); reinstalling.`)
+      } else {
+        console.log("Existing bundled Zellij is not an executable file; reinstalling.")
+      }
+    } catch (err) {
+      console.log(`Existing bundled Zellij validation failed (${err}); reinstalling.`)
+    }
   }
 
   mkdirSync(zellijBinDir, { recursive: true })
@@ -126,65 +145,85 @@ export async function ensureZellij(packageRoot) {
     process.env.AGENT_TERMINAL_ZELLIJ_CACHE ?? join(homedir(), ".cache", "agent-terminal-zellij")
   const zellijCachePath = join(zellijCacheRoot, `zellij-${ZELLIJ_VERSION}`)
 
-  // Prefer a previously verified copy from the local cache; only hit the
-  // network (GitHub) when the cache misses.
-  if (existsSync(zellijCachePath)) {
-    const cachedHash = await sha256File(zellijCachePath)
-    if (cachedHash === ZELLIJ_BINARY_SHA256) {
-      cpSync(zellijCachePath, zellijBinPath)
-      chmodSync(zellijBinPath, 0o755)
-      console.log(`Using cached Zellij ${ZELLIJ_VERSION} (${zellijCachePath})`)
-      return
+  // Stage the binary at a temporary sibling of the final path and verify it
+  // there, so a half-written or unverified binary can never be published:
+  // only a fully verified file is atomically renamed onto zellijBinPath.
+  const stagingPath = join(zellijBinDir, `zellij.tmp-${process.pid}`)
+  const extractDir = join(zellijBinDir, `zellij.tmp-${process.pid}-extract`)
+
+  try {
+    // Prefer a previously verified copy from the local cache; only hit the
+    // network (GitHub) when the cache misses.
+    if (existsSync(zellijCachePath)) {
+      try {
+        cpSync(zellijCachePath, stagingPath)
+        const cachedHash = await sha256File(stagingPath)
+        if (cachedHash !== ZELLIJ_BINARY_SHA256) {
+          console.log(`Cached Zellij hash mismatch (${cachedHash}); re-downloading.`)
+        } else {
+          chmodSync(stagingPath, 0o755)
+          renameSync(stagingPath, zellijBinPath)
+          console.log(`Using cached Zellij ${ZELLIJ_VERSION} (${zellijCachePath})`)
+          return
+        }
+      } catch (error) {
+        console.log(`Cached Zellij unusable (${error.message}); re-downloading.`)
+      }
     }
-    console.log(`Cached Zellij hash mismatch (${cachedHash}); re-downloading.`)
+
+    const archivePath = join(zellijBinDir, `zellij-${ZELLIJ_VERSION}.tar.gz`)
+    console.log(`Downloading ${releaseUrl}`)
+
+    const response = await fetch(releaseUrl)
+    if (!response.ok) {
+      throw new Error(`Failed to download Zellij: ${response.status} ${response.statusText}`)
+    }
+
+    if (response.body === null) {
+      throw new Error("Download response body was empty")
+    }
+
+    const body = Readable.fromWeb(response.body)
+    const fileStream = createWriteStream(archivePath)
+    await finished(body.pipe(fileStream))
+
+    const archiveHash = await sha256File(archivePath)
+    if (archiveHash !== ZELLIJ_ARCHIVE_SHA256) {
+      throw new Error(
+        `Zellij archive hash mismatch.\nExpected: ${ZELLIJ_ARCHIVE_SHA256}\nActual:   ${archiveHash}`,
+      )
+    }
+
+    mkdirSync(extractDir, { recursive: true })
+    run("tar", ["-xzf", archivePath, "-C", extractDir])
+
+    const stagedBinPath = join(extractDir, "zellij")
+    const binaryHash = await sha256File(stagedBinPath)
+    if (binaryHash !== ZELLIJ_BINARY_SHA256) {
+      throw new Error(
+        `Zellij binary hash mismatch.\nExpected: ${ZELLIJ_BINARY_SHA256}\nActual:   ${binaryHash}`,
+      )
+    }
+
+    const versionResult = run(stagedBinPath, ["--version"], {
+      stdio: ["ignore", "pipe", "inherit"],
+    })
+    const version = versionResult.stdout.toString().trim()
+    if (!version.includes(ZELLIJ_VERSION)) {
+      throw new Error(`Unexpected Zellij version: ${version}`)
+    }
+
+    chmodSync(stagedBinPath, 0o755)
+    renameSync(stagedBinPath, zellijBinPath)
+    rmSync(archivePath, { force: true })
+
+    mkdirSync(zellijCacheRoot, { recursive: true })
+    cpSync(zellijBinPath, zellijCachePath)
+    console.log(`Bundled ${version} at ${zellijBinPath} (cached for future builds)`)
+  } finally {
+    rmSync(stagingPath, { force: true })
+    rmSync(extractDir, { recursive: true, force: true })
   }
-
-  const archivePath = join(zellijBinDir, `zellij-${ZELLIJ_VERSION}.tar.gz`)
-  console.log(`Downloading ${releaseUrl}`)
-
-  const response = await fetch(releaseUrl)
-  if (!response.ok) {
-    throw new Error(`Failed to download Zellij: ${response.status} ${response.statusText}`)
-  }
-
-  if (response.body === null) {
-    throw new Error("Download response body was empty")
-  }
-
-  const body = Readable.fromWeb(response.body)
-  const fileStream = createWriteStream(archivePath)
-  await finished(body.pipe(fileStream))
-
-  const archiveHash = await sha256File(archivePath)
-  if (archiveHash !== ZELLIJ_ARCHIVE_SHA256) {
-    throw new Error(
-      `Zellij archive hash mismatch.\nExpected: ${ZELLIJ_ARCHIVE_SHA256}\nActual:   ${archiveHash}`,
-    )
-  }
-
-  run("tar", ["-xzf", archivePath, "-C", zellijBinDir])
-
-  const binaryHash = await sha256File(zellijBinPath)
-  if (binaryHash !== ZELLIJ_BINARY_SHA256) {
-    throw new Error(
-      `Zellij binary hash mismatch.\nExpected: ${ZELLIJ_BINARY_SHA256}\nActual:   ${binaryHash}`,
-    )
-  }
-
-  const versionResult = run(zellijBinPath, ["--version"], {
-    stdio: ["ignore", "pipe", "inherit"],
-  })
-  const version = versionResult.stdout.toString().trim()
-  if (!version.includes(ZELLIJ_VERSION)) {
-    throw new Error(`Unexpected Zellij version: ${version}`)
-  }
-
-  chmodSync(zellijBinPath, 0o755)
-  rmSync(archivePath, { force: true })
-
-  mkdirSync(zellijCacheRoot, { recursive: true })
-  cpSync(zellijBinPath, zellijCachePath)
-  console.log(`Bundled ${version} at ${zellijBinPath} (cached for future builds)`)
 }
 
 export function cleanPackage(packageRoot) {

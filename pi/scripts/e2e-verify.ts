@@ -13,7 +13,11 @@ export type PiEvent = {
 }
 
 export type ToolExecution = {
+  // Ordinal of the tool_execution_start event: calls are ordered by when they
+  // STARTED, not when they completed.
   readonly index: number
+  // Ordinal of the tool_execution_end event.
+  readonly endIndex: number
   readonly command: string
   readonly output: string
   readonly workdir?: string
@@ -277,9 +281,18 @@ export function verifyE2E(
 
   const toolEvents: ToolExecution[] = []
   let probeIndex = 0
+  // Every Bash call's command and probe classification, in
+  // tool_execution_start order. probeIndex >= 0 marks the call as probe N
+  // (the expected next probe that started here); -1 marks a lifecycle call.
+  const startedBash: Array<{ readonly command: string; readonly probeIndex: number }> = []
   const pendingBash = new Map<
     string,
-    { readonly index: number; readonly command: string; readonly workdir?: string }
+    {
+      readonly index: number
+      readonly command: string
+      readonly probeIndex: number
+      readonly workdir?: string
+    }
   >()
 
   for (let i = 0; i < events.length; i++) {
@@ -310,11 +323,21 @@ export function verifyE2E(
         }
       }
       const workdir = ev.args?.["workdir"]
+      // Classify the probe at START: whether a command is a probe depends
+      // only on start order, never on which end event arrives first.
+      const nextProbe = probes[probeIndex]
+      const probeIndexAtStart =
+        nextProbe !== undefined && nextProbe.command === command.trim() ? probeIndex : -1
+      if (probeIndexAtStart >= 0) {
+        probeIndex++
+      }
       pendingBash.set(callId, {
         index: i,
         command,
+        probeIndex: probeIndexAtStart,
         ...(typeof workdir === "string" ? { workdir } : {}),
       })
+      startedBash.push({ command, probeIndex: probeIndexAtStart })
       continue
     }
     if (ev.type === "tool_execution_end") {
@@ -329,67 +352,56 @@ export function verifyE2E(
           error: `Bash tool call failed: ${JSON.stringify(ev.result).slice(0, 200)}`,
         }
       }
-      const execution: ToolExecution = {
-        index: i,
-        command: start.command,
-        output: extractToolOutput(ev.result),
-        ...(start.workdir === undefined ? {} : { workdir: start.workdir }),
-      }
-      // The probes must be the FIRST Bash calls, in order, before any
-      // lifecycle call. Each probe requires an empty lifecycle history so a
-      // mis-ordered probe cannot be masked by retried lifecycle calls.
-      const probe = probes[probeIndex]
-      if (probe !== undefined && probe.command === execution.command.trim()) {
-        if (toolEvents.length !== 0) {
+      // Probe identity was fixed at tool_execution_start; the end event only
+      // validates the output. A lifecycle call that started after the probe
+      // but finished earlier must not demote it, and completion order must
+      // never decide which probe this is.
+      if (start.probeIndex >= 0) {
+        const probe = probes[start.probeIndex]
+        if (probe === undefined) {
+          return { ok: false, error: "internal: probe start index out of range" }
+        }
+        const output = extractToolOutput(ev.result)
+        const printed = output.replace(/\n\nWall time:.*$/s, "").trim()
+        if (probe.expected === "session" && printed !== sessionId) {
           return {
             ok: false,
-            error: `probe "${probe.command}" must be the first Bash call, but a lifecycle call preceded it: ${toolEvents[0]?.command ?? ""}`,
+            error: `probe "${probe.command}" printed "${printed}", expected the session id "${sessionId}"`,
           }
         }
-        if (probe.expected === "session") {
-          const printed = execution.output.replace(/\n\nWall time:.*$/s, "").trim()
-          if (printed !== sessionId) {
-            return {
-              ok: false,
-              error: `probe "${probe.command}" printed "${printed}", expected the session id "${sessionId}"`,
-            }
-          }
-        } else {
-          const printed = execution.output.replace(/\n\nWall time:.*$/s, "").trim()
-          if (printed !== "shared") {
-            return {
-              ok: false,
-              error: `probe "${probe.command}" printed "${printed}", expected "shared"`,
-            }
+        if (probe.expected !== "session" && printed !== "shared") {
+          return {
+            ok: false,
+            error: `probe "${probe.command}" printed "${printed}", expected "shared"`,
           }
         }
-        probeIndex++
         continue
       }
-      const workdir = execution.workdir
+      const workdir = start.workdir
       if (expectedWorkdir !== undefined && workdir !== undefined && workdir !== expectedWorkdir) {
         return {
           ok: false,
           error: `Bash tool call used unexpected workdir: ${workdir}; expected ${expectedWorkdir}`,
         }
       }
-      const parsedCommand = parseAgentTerminalCommand(execution.command)
+      const parsedCommand = parseAgentTerminalCommand(start.command)
       if (parsedCommand.kind === "other") {
         return {
           ok: false,
-          error: `Bash tool call is not an agent-terminal lifecycle command: ${execution.command}`,
+          error: `Bash tool call is not an agent-terminal lifecycle command: ${start.command}`,
         }
       }
       if (parsedCommand.kind === "invalid") {
         return {
           ok: false,
-          error: `invalid agent-terminal command: ${parsedCommand.reason}: ${execution.command}`,
+          error: `invalid agent-terminal command: ${parsedCommand.reason}: ${start.command}`,
         }
       }
       toolEvents.push({
-        index: execution.index,
+        index: start.index,
+        endIndex: i,
         command: parsedCommand.command,
-        output: execution.output,
+        output: extractToolOutput(ev.result),
         ...(workdir === undefined ? {} : { workdir }),
       })
     }
@@ -397,6 +409,21 @@ export function verifyE2E(
 
   if (pendingBash.size > 0) {
     return { ok: false, error: "a Bash tool call did not complete (missing tool_execution_end)" }
+  }
+
+  // Enforce the agent-specific probe prefix against START order: the first
+  // `probes.length` Bash starts must be the probes in exact order. Each call
+  // carries its start-time classification, so completion order plays no part.
+  for (let i = 0; i < probes.length; i++) {
+    const started = startedBash[i]
+    if (started === undefined) break
+    if (started.probeIndex !== i) {
+      const probe = probes[i]
+      return {
+        ok: false,
+        error: `probe "${probe?.command ?? ""}" must be the first Bash call, but a lifecycle call preceded it: ${started.command}`,
+      }
+    }
   }
 
   if (toolEvents.length === 0) {
@@ -419,9 +446,14 @@ export function verifyE2E(
   }
 
   let step = 0
+  // The start command's job shell prints a scope marker line (the two-session
+  // gate pins identically named panes by it); the literal must dereference
+  // the scope env var of the agent under test, matching e2e-fixture.ts's
+  // stepStart byte-for-byte.
+  const scopeMarkerEnv = agent === "omp" ? "AGENT_TERMINAL_SCOPE" : "PI_SESSION_ID"
   const expectedCommands = {
     initialList: "agent-terminal list",
-    start: `agent-terminal start ${jobName} -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
+    start: `agent-terminal start ${jobName} -- /bin/bash -lc 'printf "prompt-ready\\n"; printf "scope-marker:%s\\n" "$${scopeMarkerEnv}"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
     read: `agent-terminal read ${jobName}`,
     send: `agent-terminal send ${jobName} -- hello-e2e`,
     press: `agent-terminal press ${jobName} -- Enter`,
@@ -590,7 +622,7 @@ export function verifyE2E(
     return { ok: false, error: `lifecycle incomplete. missing milestones: ${pending}` }
   }
 
-  const finalToolIndex = toolEvents[toolEvents.length - 1]?.index
+  const finalToolIndex = toolEvents[toolEvents.length - 1]?.endIndex
   if (finalToolIndex === undefined) {
     return { ok: false, error: "lifecycle completed without a final tool event" }
   }
@@ -639,6 +671,9 @@ export function verifyE2E(
   return { ok: true }
 }
 
+const USAGE =
+  "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path] [--agent pi|omp]"
+
 export function main(): void {
   const args = process.argv.slice(2)
   let path = ""
@@ -660,9 +695,20 @@ export function main(): void {
       i++
       continue
     }
-    if (argument === "--agent" && i + 1 < args.length) {
+    if (argument === "--agent") {
       const v = args[i + 1]
-      agent = v === "omp" ? "omp" : "pi"
+      if (v === undefined) {
+        console.error("--agent requires a value: pi or omp")
+        console.error(USAGE)
+        process.exit(2)
+      }
+      if (v !== "pi" && v !== "omp") {
+        console.error(`invalid --agent value: ${v}`)
+        console.error("--agent accepts exactly pi or omp")
+        console.error(USAGE)
+        process.exit(2)
+      }
+      agent = v
       i++
       continue
     }
@@ -670,9 +716,7 @@ export function main(): void {
     else if (!jobName) jobName = argument
   }
   if (!path || !jobName) {
-    console.error(
-      "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path] [--agent pi|omp]",
-    )
+    console.error(USAGE)
     process.exit(2)
   }
   const result = verifyE2E(path, jobName, mode, expectedWorkdir, agent)

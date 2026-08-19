@@ -127,7 +127,7 @@ scope or working directory.
 
 ## pi / omp skill
 
-Four npm packages are published, one slim and one Zellij-bundling variant per host:
+Four npm package artifacts are built, one slim and one Zellij-bundling variant per host:
 
 - `@ufoq/pi-agent-terminal` — bundles the static Linux x86_64 `agent-terminal` binary and the
   skill. The host must have Zellij on `PATH`.
@@ -135,6 +135,11 @@ Four npm packages are published, one slim and one Zellij-bundling variant per ho
   host install is required.
 - `@ufoq/omp-agent-terminal` — the omp variant of the slim package.
 - `@ufoq/omp-agent-terminal-bundle-zellij` — the omp variant with the pinned Zellij binary.
+
+The two pi packages are published to the npm registry. The two omp packages are built
+locally but not yet published: their registry endpoints return 404 and publication is
+deferred. Until they are published, load the omp packages from the local package root (see
+the usage note below).
 
 Each package ships a per-host adapter extension (`pi.extensions` manifest) plus the bundled
 binary and skill. The pi packages are loaded via pi's `-e` flag or auto-discovered from
@@ -173,8 +178,10 @@ For each `bash` tool call it
   AGENT_TERMINAL_SCOPE`, since bash env values are passed as environment values, not shell
   text. Without a session id (or without a session manager), the scope is left unset and the
   CLI falls back to `standalone`;
-- prepends the bundled binary directories to the bash `env.PATH`, keeping the process PATH
-  as the base so host binaries remain resolvable;
+- prepends the bundled binary directories to the bash `env.PATH`. The bundled dirs are
+  always prepended; the process PATH is used as the base only when the call supplies no
+  `env.PATH`, and a supplied value (including an explicit empty string, which yields the
+  bundled dirs alone) replaces the process PATH rather than inheriting it;
 - registers the compatibility flag `--no-context-files`, which omp does not provide
   natively (`--no-lsp` and `--cwd` are native to omp and are not registered).
 
@@ -185,17 +192,20 @@ The skill is discovered natively: omp's `omp-plugins` provider registers
 Known caveats:
 
 - On direnv projects, an explicit bash `env.PATH` takes precedence over the `.envrc` PATH
-  (omp's native caller-env-over-direnv precedence); the bundled binaries and the process
-  PATH are always available.
+  (omp's native caller-env-over-direnv precedence); the bundled binaries are always
+  prepended, and the process PATH is the base only when the call supplies no `env.PATH`.
 - `tool_call` input revisions compose across extensions with the last returned input
   winning, and handlers do not observe each other's revisions — another extension revising
   bash input may override this adapter's revision or vice versa.
 
-To use it, load the package for your host with `-e`:
+To use it, load the package for your host with `-e`. The pi package loads from npm. The omp
+package also loads from `npm:` once published; until then load it from the local package
+root (the skills-sibling directory, not the dist file):
 
 ```bash
 pi -e npm:@ufoq/pi-agent-terminal-bundle-zellij
-omp -e npm:@ufoq/omp-agent-terminal-bundle-zellij
+omp -e npm:@ufoq/omp-agent-terminal-bundle-zellij          # post-publication
+omp -e omp/npm/packages/omp-agent-terminal-bundle-zellij   # local, until published
 ```
 
 ## Lifecycle

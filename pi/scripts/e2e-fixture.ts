@@ -63,10 +63,20 @@ type HistoryMessage = {
 
 const AGENT = process.env["AGENT_TERMINAL_AGENT"] === "omp" ? "omp" : "pi"
 
+// Scope shell reference printed by the start command's shell as a pane
+// marker ("scope-marker:<scope>"): the two-session isolation gate starts two
+// identically named jobs and tells the panes apart by this marker, so the
+// marker must expand to the scope of the session that spawned the pane (the
+// agent-terminal CLI inherits PI_SESSION_ID / AGENT_TERMINAL_SCOPE into the
+// job shell).
+const SCOPE_MARKER_ENV = AGENT === "omp" ? "$AGENT_TERMINAL_SCOPE" : "$PI_SESSION_ID"
+
 // Exact job name override: replaces the legacy /prompt-smoke-\d+/ extraction
 // from the prompt text so the fixture can drive arbitrary job names (e.g.
-// `server` in the two-session isolation gate).
-const JOB_NAME_OVERRIDE = process.env["AGENT_TERMINAL_JOB_NAME"]?.trim() ?? ""
+// `server` in the two-session isolation gate). The raw env value is honored
+// verbatim — no trimming — so callers control the exact job name; the legacy
+// extraction only kicks in when the override is absent or empty.
+const JOB_NAME_OVERRIDE = process.env["AGENT_TERMINAL_JOB_NAME"] ?? ""
 
 // Hold mode: insert a sleep step right after `start` so the job stays alive
 // mid-lifecycle while a second session inspects it (two-session isolation
@@ -85,7 +95,6 @@ type Step = {
   cmd: (job: string) => string
   onResult: string
   probe?: boolean
-  probeValue?: string
   hold?: boolean
   check?: (body: Record<string, unknown>, job: string) => StepCheck
 }
@@ -112,7 +121,7 @@ const stepList: Step = {
 
 const stepStart: Step = {
   cmd: (job: string) =>
-    `agent-terminal start ${job} -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
+    `agent-terminal start ${job} -- /bin/bash -lc 'printf "prompt-ready\\n"; printf "scope-marker:%s\\n" "${SCOPE_MARKER_ENV}"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
   onResult: "start",
   check: (body: Record<string, unknown>, _job: string): StepCheck => {
     if (body["state"] !== "running")
@@ -250,7 +259,6 @@ function buildSteps(): Step[] {
       },
       {
         probe: true,
-        probeValue: "shared",
         cmd: (_job: string) => "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE",
         onResult: "scope-probe-override",
       },
@@ -377,21 +385,15 @@ function validateStep(stepIdx: number, job: string, content: string | null): Ste
   if (step.probe === true) {
     // omp's bash tool appends "\n\nWall time: X seconds..." (plus a
     // "Command exited with code N" line) after the actual command output, so
-    // strip the same suffix e2e-verify.ts strips before comparing the probe's
-    // literal printed value.
+    // strip the same suffix e2e-verify.ts strips. The probe advances on any
+    // non-empty printed value; exact-value comparison belongs exclusively to
+    // e2e-verify.ts.
     const printed = content.replace(/\n\nWall time:.*$/s, "").trim()
     if (printed === "") {
       return {
         ok: false,
         retry: false,
         error: `step ${stepIdx + 1}: probe printed an empty value`,
-      }
-    }
-    if (step.probeValue !== undefined && printed !== step.probeValue) {
-      return {
-        ok: false,
-        retry: false,
-        error: `step ${stepIdx + 1}: expected "${step.probeValue}", got "${printed}"`,
       }
     }
     return { ok: true }
