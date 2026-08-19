@@ -1,6 +1,6 @@
 {
   "name": "@ufoq/pi-agent-terminal-bundle-zellij",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "pi coding agent extension that bundles the Linux x86_64 agent-terminal CLI, skill, and a pinned Zellij binary",
   "type": "module",
   "license": "MIT",
