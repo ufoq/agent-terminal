@@ -104,13 +104,6 @@ export const createExtension = (input: CreateExtensionInput = {}): ExtensionFact
       process.env["PATH"] ?? "",
       bundledZellijMissing,
     )
-
-    // Register the agent-terminal skill directory.
-    pi.on("resources_discover", async () => {
-      return {
-        skillPaths: [join(packageRoot, "skills")],
-      }
-    })
   }
 }
 

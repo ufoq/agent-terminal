@@ -37,6 +37,9 @@
   "pi": {
     "extensions": [
       "./dist/index.js"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "files": [

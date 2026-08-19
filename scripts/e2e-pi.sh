@@ -401,10 +401,11 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   phase "$AGENT_TERMINAL_AGENT prompt e2e"
   printf '\n== %s prompt e2e ==\n' "$AGENT_TERMINAL_AGENT"
 
-  # The bundled skill is registered by the extension's skill loader; the
-  # dedicated scripts/e2e-skill-discovery.sh gate probes its description
-  # phrase in a live agent session (the pi/omp CLIs have no `debug skill`
-  # command unlike opencode, so there is no CLI probe for it).
+  # Static package-root discovery exposes the bundled skill: pi reads its
+  # `pi.skills` manifest entry, while omp's native `omp-plugins` provider finds
+  # the shipped `skills/` sibling. The dedicated scripts/e2e-skill-discovery.sh
+  # gate proves this in a live agent session by probing the skill's description
+  # phrase (the pi/omp CLIs have no `debug skill` command unlike opencode).
   AGENT_FLAGS=""
   if [[ $AGENT_TERMINAL_AGENT == "omp" ]]; then
     AGENT_FLAGS="--auto-approve --no-pty"

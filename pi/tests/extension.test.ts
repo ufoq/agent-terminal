@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -89,6 +90,13 @@ type CreateExtensionTestInput = {
   readonly packageRoot: string
   readonly platform?: string
   readonly stderr?: (message: string) => void
+}
+
+type PiManifest = {
+  readonly pi: {
+    readonly extensions: readonly string[]
+    readonly skills: readonly string[]
+  }
 }
 
 function loadExtension(api: FakeApi, input: CreateExtensionTestInput): void {
@@ -187,14 +195,11 @@ describe("pi agent-terminal extension", () => {
     expect(parts.slice(3)).toEqual(["/usr/bin"])
   })
 
-  it("registers a resources_discover handler that returns the skills path", async () => {
+  it("registers no event handlers after a successful load", () => {
     const root = createPackageLayout()
     const { api, handlers } = createFakeApi()
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
-    const handler = handlers.get("resources_discover")
-    expect(handler).toBeTypeOf("function")
-    const result = (await handler?.()) as { skillPaths?: string[] } | undefined
-    expect(result?.skillPaths).toEqual([join(root, "skills")])
+    expect(handlers.size).toBe(0)
   })
 
   it("does nothing on non-linux platforms and reports a diagnostic", () => {
@@ -261,5 +266,19 @@ describe("pi agent-terminal extension", () => {
     expect(parts[0]).toBe(join(root, "bin", "zellij"))
     expect(parts[1]).toBe(join(root, "bin", "linux-x64"))
     expect(parts.slice(3)).toEqual(["/usr/bin"])
+  })
+
+  it("declares the extension and skill resources in both package manifests", () => {
+    const testDir = dirname(fileURLToPath(import.meta.url))
+    const packageRoot = join(testDir, "..", "npm", "packages")
+    const manifests = [
+      join(packageRoot, "pi-agent-terminal", "package.json"),
+      join(packageRoot, "pi-agent-terminal-bundle-zellij", "package.json"),
+    ]
+    for (const manifestPath of manifests) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PiManifest
+      expect(manifest.pi.extensions).toEqual(["./dist/index.js"])
+      expect(manifest.pi.skills).toEqual(["./skills"])
+    }
   })
 })

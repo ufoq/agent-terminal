@@ -303,11 +303,14 @@ per-host workspace scripts over the shared build library `scripts/npm-build-lib.
 | `@ufoq/omp-agent-terminal` | omp | adapter, binary, skill; host must have Zellij on `PATH` |
 | `@ufoq/omp-agent-terminal-bundle-zellij` | omp | same, plus a pinned Zellij binary |
 
-Every package declares its extension entry point in the `pi.extensions` manifest field
-(`"pi": { "extensions": ["./dist/index.js"] }`), which both pi and omp honor. Pi packages
-load via pi's `-e` flag or auto-discovery from `~/.pi/agent/extensions/`; omp packages via
-omp's `-e` flag or auto-discovery from `~/.omp/agent/extensions/`. The Rust CLI, skill
-content, bundled binaries, and JSON protocol are unchanged and shared between hosts.
+Pi packages declare their extension entry point and skill directory in the `pi` manifest
+field (`"pi": { "extensions": ["./dist/index.js"], "skills": ["./skills"] }`), which
+pi honors. OMP packages declare only their extension entry point; omp's native
+`omp-plugins` provider discovers the shipped `skills/` sibling when the package root
+loads. Pi packages load via pi's `-e` flag or auto-discovery from
+`~/.pi/agent/extensions/`; omp packages via omp's `-e` flag or auto-discovery from
+`~/.omp/agent/extensions/`. The Rust CLI, skill content, bundled binaries, and JSON
+protocol are unchanged and shared between hosts.
 
 The build pipeline compiles the Rust binary once (`x86_64-unknown-linux-musl`), compiles
 the per-host adapter with `bun build`, and copies the binary, the dist, and the skill into
@@ -324,15 +327,14 @@ The pi adapter never touches the bash tool. Pi's native bash keeps its stock def
 approval, and concurrency by construction — the adapter neither replaces the tool nor
 wraps its execution. On load it guards the platform (`linux`) and then the architecture
 (`x64`) first, returning early on either mismatch; next it registers the compatibility
-flags; only the PATH mutation and skill registration are gated behind the bundled-binary
-check:
+flags; only the PATH mutation is gated behind the bundled-binary check:
 
 1. Registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide
    natively. These are honest compatibility registrations: the adapter makes no behavior
    claims, and `--cwd` no longer feeds a bash tool (bash's working directory is the
    invocation directory). `--no-context-files` is native to pi and is not registered.
 2. Checks the bundled `agent-terminal` executable; if it is missing or not executable, the
-   adapter logs a diagnostic and returns before mutating PATH or registering the skill.
+   adapter logs a diagnostic and returns before mutating PATH.
 3. Mutates `process.env.PATH` with the ordering `bundledDirs : piManagedBin : rest`
    (deduplicated). `piManagedBin` is `join(getAgentDir(), "bin")` — the SDK's root
    `getAgentDir` export, which honors `PI_CODING_AGENT_DIR`; the SDK does not export
@@ -340,8 +342,12 @@ check:
    `~/.pi/agent/bin` when it is absent, the explicit insertion makes the managed-bin check
    pass and keeps the bundled directories first — a stale `agent-terminal`/`zellij` in the
    managed bin can never shadow the bundled ones.
-4. Registers the skill via `pi.on("resources_discover")`, returning
-   `{ skillPaths: [join(packageRoot, "skills")] }`.
+
+The adapter registers no skill handler. The shared skill is discovered statically by the
+package resource loader: the `pi.skills` manifest entry (`["./skills"]`) exposes it for
+package-root loads (`-e <package root>` or `npm:`), while loading the dist file directly
+(`-e <package>/dist/index.js`) is extension-only and intentionally does not discover the
+skill.
 
 Scope: pi injects `PI_SESSION_ID` into every bash child natively, so per-session isolation
 needs zero extension code. The Rust CLI resolves `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID`
@@ -387,7 +393,7 @@ provide natively; `--no-lsp` and `--cwd` are native to omp and are not registere
 Skill: omp's `omp-plugins` provider discovers `skills/<name>/SKILL.md` natively for
 packages loaded through `-e <package root>` or the `npm:` spec (with
 `requireDescription: true`, which our SKILL.md frontmatter satisfies), so the omp adapter
-does not register `resources_discover`.
+registers no skill handler.
 
 ### Flag matrix
 
@@ -431,11 +437,11 @@ Rust CLI priority.
 request's messages and asserts the skill's DESCRIPTION phrase ("Run persistent or
 interactive terminal jobs through a simple Zellij wrapper") is present — hosts inject skill
 metadata (name + description + location), not body text, so the description is the
-discovery marker. The omp run loads the extension with `-e <package root>` (not the dist
-file): `omp-plugins` scans `<package>/skills` and registers it only for package-root
-directories carrying the `pi.extensions`/`omp.extensions` manifest. This proves real-host
-discovery end to end on both hosts — extension loads → skill registers → skill metadata
-reaches the model request.
+discovery marker. Both runs load the package with `-e <package root>` (not the dist
+file). Pi's package resource loader reads the declared `pi.skills` directory there;
+omp's native `omp-plugins` provider discovers the shipped `<package>/skills` sibling
+there. This proves real-host static skill discovery end to end on both hosts: discovery
+reaches the model request as skill metadata.
 
 In addition to the deterministic gates, `scripts/e2e-pi-real.sh` is an **optional,
 local-only** real-model e2e mirroring `scripts/e2e-opencode-real.sh`: it is not a release

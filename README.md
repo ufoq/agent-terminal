@@ -141,8 +141,11 @@ locally but not yet published: their registry endpoints return 404 and publicati
 deferred. Until they are published, load the omp packages from the local package root (see
 the usage note below).
 
-Each package ships a per-host adapter extension (`pi.extensions` manifest) plus the bundled
-binary and skill. The pi packages are loaded via pi's `-e` flag or auto-discovered from
+Each package ships a per-host adapter extension plus the bundled binary and skill. Pi
+manifests declare both resources (`"pi": { "extensions": ["./dist/index.js"], "skills":
+["./skills"] }`); OMP manifests declare only the extension entry point, and omp's native
+`omp-plugins` provider discovers the shipped `skills/` sibling when the package root
+loads. The pi packages are loaded via pi's `-e` flag or auto-discovered from
 `~/.pi/agent/extensions/`; the omp packages via omp's `-e` flag or auto-discovered from
 `~/.omp/agent/extensions/`.
 
@@ -155,11 +158,16 @@ definition, and the extension only
   and, for the bundle variant, `bin/zellij`) are ordered ahead of pi's managed
   `~/.pi/agent/bin` — this also satisfies pi's own conditional managed-bin prepend, so the
   bundled `agent-terminal` and Zellij always win without host installs;
-- registers the bundled `agent-terminal` skill via `resources_discover`;
 - registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide
   natively. These are compatibility registrations only: the adapter makes no behavior
   claims, and `--cwd` no longer feeds a bash tool (bash's working directory is the
   invocation directory).
+
+The bundled skill is discovered statically: the package's `pi.skills` manifest entry
+(`["./skills"]`) is what exposes it, so the adapter registers no skill handler. Loading
+the package root (`-e <package root>` or `npm:`) discovers both the declared extension
+and the skill; loading the dist file directly (`-e <package>/dist/index.js`) is
+extension-only and intentionally does not discover the skill.
 
 Per-session isolation is native: pi injects `PI_SESSION_ID` into every bash child, and the
 Rust CLI falls back to `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID` → `standalone`. No extension
@@ -185,9 +193,9 @@ For each `bash` tool call it
 - registers the compatibility flag `--no-context-files`, which omp does not provide
   natively (`--no-lsp` and `--cwd` are native to omp and are not registered).
 
-The skill is discovered natively: omp's `omp-plugins` provider registers
+The skill is discovered statically: omp's `omp-plugins` provider registers
 `skills/agent-terminal/SKILL.md` for packages loaded through `-e <package root>` or the
-`npm:` spec, so no `resources_discover` handler is needed.
+`npm:` spec, so the adapter registers no skill handler.
 
 Known caveats:
 
@@ -198,7 +206,9 @@ Known caveats:
   winning, and handlers do not observe each other's revisions — another extension revising
   bash input may override this adapter's revision or vice versa.
 
-To use it, load the package for your host with `-e`. The pi package loads from npm. The omp
+To use it, load the package for your host with `-e`. Both hosts discover the shipped
+skill only when the package root is loaded — `-e <package root>` or the `npm:` spec —
+not when the dist file is loaded directly. The pi package loads from npm. The omp
 package also loads from `npm:` once published; until then load it from the local package
 root (the skills-sibling directory, not the dist file):
 
@@ -396,11 +406,11 @@ Two additional scripts cover cross-session and skill concerns beyond the lifecyc
 - `scripts/e2e-skill-discovery.sh` — a unified skill-discovery smoke for both hosts. With
   `AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1`, the mini fixture inspects the first provider
   request's messages and asserts the skill's DESCRIPTION phrase ("Run persistent or
-  interactive terminal jobs through a simple Zellij wrapper") is present, proving the
-  extension loads, the skill registers (via `resources_discover` on pi, via omp's native
-  `omp-plugins` provider on omp), and the skill metadata reaches the model request. The omp
-  run loads the extension with `-e <package root>` — the package root, not the dist file —
-  because sibling `skills/` discovery only registers for package-root directories.
+  interactive terminal jobs through a simple Zellij wrapper") is present, proving static
+  package-root discovery reaches the model request. Both runs load the package with
+  `-e <package root>` — the package root, not the dist file — because Pi discovers the
+  declared `pi.skills` directory there and omp's native `omp-plugins` provider discovers
+  its shipped `skills/` sibling there.
 
 ```bash
 AGENT_TERMINAL_AGENT=pi bash scripts/e2e-two-session.sh

@@ -13,11 +13,13 @@
 #   - not found -> replies SKILL_PROBE_FAILED and stops the session.
 # The gate passes only when the transcript contains SKILL_PROBE_OK.
 #
-# This proves the skill packaging contract for each agent:
-#   - pi:  the extension dist (dist/index.js) registers the skill, and the
-#          agent loads it at startup;
-#   - omp: the bundle package ROOT (npm/packages/omp-agent-terminal-bundle-zellij)
-#          ships the skill and omp discovers it from the package.
+# This proves the skill packaging contract for each agent: the bundle package
+# ROOT (pi: npm/packages/pi-agent-terminal-bundle-zellij; omp:
+# npm/packages/omp-agent-terminal-bundle-zellij) ships the skill. Pi discovers
+# it through the `pi.skills` manifest entry; omp's native `omp-plugins` provider
+# discovers the shipped `skills/` sibling. No extension loader registers it.
+# Loading the built dist/index.js file directly is extension-only and must NOT
+# expose the skill.
 #
 # No model and no Bash execution are involved — the fixture replaces the
 # model, exactly like scripts/e2e-pi-local.sh.
@@ -146,15 +148,12 @@ if [[ ! -f $EXTENSION_PATH ]]; then
   fail "extension dist missing after build: $EXTENSION_PATH"
 fi
 
-# The skill discovery contract differs per agent:
-#   - pi:  the extension dist FILE registers the skill via the extension API;
-#   - omp: omp discovers skills from a loaded package ROOT (the bundle package
-#          ships skills/agent-terminal/SKILL.md).
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  EXTENSION_ARG="$BUNDLE_PACKAGE"
-else
-  EXTENSION_ARG="$EXTENSION_PATH"
-fi
+# The skill discovery contract requires the bundle package ROOT for both agents:
+# pi reads its declared `pi.skills` directory, while omp's native `omp-plugins`
+# provider discovers the shipped `skills/` sibling. The built dist/index.js file
+# is extension-only and does not expose the skill; it is checked above purely as
+# a build-artifact assertion.
+EXTENSION_ARG="$BUNDLE_PACKAGE"
 
 # Prepare isolated run directory: sandbox bin dir for the agent wrapper, the
 # provider extension file, and the transcript.
@@ -278,7 +277,7 @@ TRANSCRIPT="$RUN_DIR/transcript.jsonl"
 # Isolated agent environment: the agent runs under `env -i` with a temporary
 # HOME, XDG dirs, and agent config dir inside this run's sandbox. Both hosts
 # discover user-installed extensions/skills, so a pre-existing install must
-# never satisfy the smoke: the extension under test and the fixture provider
+# never satisfy the smoke: the package under test and the fixture provider
 # are the ONLY things the fresh agent config dir contains. PI_OFFLINE=1 keeps
 # pi off the network (the fixture replaces the model).
 install -d -m 0700 \
@@ -293,7 +292,7 @@ install -d -m 0700 \
 ISOLATED_PATH="/opt/bun/bin:$PATH"
 
 # Run the agent with skills ENABLED (no --no-skills) and both extensions: the
-# agent-terminal extension (pi: dist file; omp: package root) and the fixture
+# agent-terminal bundle package ROOT (static skill discovery) and the fixture
 # provider extension. AGENT_FLAGS is intentionally word-split so omp can add
 # its native flags.
 AGENT_FLAGS=""
