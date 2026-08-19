@@ -6,10 +6,10 @@
 # Starts a local OpenAI-compatible fixture server that drives the 9-step
 # agent-terminal lifecycle deterministically — no large model download, no
 # llama.cpp. The fixture validates tool results and advances through each step.
-# This gate exercises a real pi/omp binary, real extension hooks (spawnHook
-# scope injection + PATH exposure), real Bash execution, and real
-# agent-terminal — only the model's reasoning is replaced by a deterministic
-# script.
+# This gate exercises a real pi/omp binary, real extension hooks (per-session
+# scope exposure + PATH exposure to the Bash tool), real Bash execution, and
+# real agent-terminal — only the model's reasoning is replaced by a
+# deterministic script.
 #
 # Usage:
 #   AGENT_TERMINAL_AGENT=pi bash scripts/e2e-pi-local.sh
@@ -18,7 +18,8 @@
 # Environment overrides:
 #   AGENT_TERMINAL_AGENT          - agent under test: pi (default) or omp
 #   AGENT_TERMINAL_PI_DIR         - pi package dir (default: ~/.local/pi/pkg)
-#   AGENT_TERMINAL_FIXTURE_PORT   - port for the fixture server (default: auto from 19000-19100)
+#   AGENT_TERMINAL_FIXTURE_PORT   - port for the fixture server (default: auto — the fixture
+#                                  binds an ephemeral port and reports it; no free-port probing)
 #   AGENT_TERMINAL_CLEANUP        - delete temp dirs on exit (default: 1)
 #   AGENT_TERMINAL_SKIP_PREFLIGHT - skip build preflight (default: 0)
 
@@ -29,12 +30,19 @@ umask 077
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly E2E_HARNESS="$REPO_ROOT/scripts/e2e-pi.sh"
 readonly PI_ROOT="$REPO_ROOT/pi"
-readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
 readonly FIXTURE_SCRIPT="$PI_ROOT/scripts/e2e-fixture.ts"
+
+AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
+if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
+  readonly WS_ROOT="$REPO_ROOT/omp"
+  readonly BUNDLE_PACKAGE="$WS_ROOT/npm/packages/omp-agent-terminal-bundle-zellij"
+else
+  readonly WS_ROOT="$PI_ROOT"
+  readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
+fi
 
 CLEANUP="${AGENT_TERMINAL_CLEANUP:-1}"
 SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
-AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
 
 RUN_DIR=""
 FIXTURE_PID=""
@@ -107,10 +115,10 @@ case "$AGENT_TERMINAL_AGENT" in
 esac
 
 # Build the local bundle-zellij npm package (Rust musl binary + extension +
-# skill + pinned Zellij).
+# skill + pinned Zellij) for the agent under test.
 if [[ $SKIP_PREFLIGHT != 1 ]]; then
-  printf 'Building local pi npm package ...\n'
-  cd "$PI_ROOT"
+  printf 'Building local %s npm package ...\n' "$AGENT_TERMINAL_AGENT"
+  cd "$WS_ROOT"
   if ! bun run build; then
     fail "bun run build failed"
   fi
@@ -145,33 +153,54 @@ EOF
 fi
 chmod 0755 "$AGENT_BIN"
 
-# Find a free loopback port for the fixture.
+# Allocate the fixture port atomically: with --port 0 the kernel binds an
+# ephemeral port and the fixture reports the actual port on stdout as
+# FIXTURE_PORT=<digits> (no free-port probing, no TOCTOU window).
 FIXTURE_PORT="${AGENT_TERMINAL_FIXTURE_PORT:-}"
+FIXTURE_ARGS=()
 if [[ -z $FIXTURE_PORT ]]; then
-  FIXTURE_PORT="$(python3 - "$RUN_DIR" <<'PY'
-import socket, sys
-for port in range(19000, 19100):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if s.connect_ex(("127.0.0.1", port)) != 0:
-            print(port)
-            sys.exit(0)
-print("", file=sys.stderr)
-sys.exit(1)
-PY
-)"
-  if [[ -z $FIXTURE_PORT ]]; then
-    fail "could not find a free port for the fixture server"
-  fi
+  # Auto mode: bind an ephemeral port and parse it back from the log.
+  FIXTURE_ARGS+=(--port 0)
+else
+  FIXTURE_ARGS+=(--port "$FIXTURE_PORT")
 fi
 
 readonly MODEL_ALIAS="fixture"
 readonly PROVIDER_NAME="local-fixture"
-readonly BASE_URL="http://127.0.0.1:$FIXTURE_PORT/v1"
 
-printf 'Starting e2e fixture on port %s ...\n' "$FIXTURE_PORT"
-bun run "$FIXTURE_SCRIPT" --port "$FIXTURE_PORT" &
+# The fixture must start AFTER these are exported: it reads them at process
+# start to select the probe steps (AGENT_TERMINAL_AGENT) and the exact job
+# name (AGENT_TERMINAL_JOB_NAME, passed through from the caller when set).
+export AGENT_TERMINAL_AGENT
+export AGENT_TERMINAL_JOB_NAME="${AGENT_TERMINAL_JOB_NAME:-}"
+
+if [[ -z $FIXTURE_PORT ]]; then
+  printf 'Starting e2e fixture on an ephemeral port ...\n'
+else
+  printf 'Starting e2e fixture on port %s ...\n' "$FIXTURE_PORT"
+fi
+bun run "$FIXTURE_SCRIPT" "${FIXTURE_ARGS[@]}" >"$RUN_DIR/fixture.log" 2>&1 &
 FIXTURE_PID=$!
+
+if [[ -z $FIXTURE_PORT ]]; then
+  # Auto mode: the fixture bound an ephemeral port; read it back from the
+  # machine-readable FIXTURE_PORT line it prints to stdout.
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
+      cat "$RUN_DIR/fixture.log" >&2
+      fail "fixture exited before reporting its port (see $RUN_DIR/fixture.log)"
+    fi
+    FIXTURE_PORT="$(grep -m1 -o 'FIXTURE_PORT=[0-9][0-9]*' "$RUN_DIR/fixture.log" 2>/dev/null | cut -d= -f2 || true)"
+    if [[ -n $FIXTURE_PORT ]]; then
+      break
+    fi
+    sleep 0.2
+  done
+  if [[ -z $FIXTURE_PORT ]]; then
+    cat "$RUN_DIR/fixture.log" >&2
+    fail "fixture never reported its port (FIXTURE_PORT=<digits> missing from $RUN_DIR/fixture.log)"
+  fi
+fi
 
 # Wait for the fixture to become healthy.
 for _ in $(seq 1 30); do
@@ -179,13 +208,18 @@ for _ in $(seq 1 30); do
     break
   fi
   if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
-    fail "fixture exited before becoming healthy"
+    cat "$RUN_DIR/fixture.log" >&2
+    fail "fixture exited before becoming healthy (see $RUN_DIR/fixture.log)"
   fi
   sleep 0.2
 done
 if ! curl -fsS "http://127.0.0.1:$FIXTURE_PORT/health" >/dev/null 2>&1; then
   fail "fixture did not become healthy within 30 checks"
 fi
+
+# The provider base URL must be built from the resolved port (ephemeral in
+# auto mode), so it is defined only now that FIXTURE_PORT is final.
+readonly BASE_URL="http://127.0.0.1:$FIXTURE_PORT/v1"
 
 # pi/omp do not read a config file for custom providers (unlike opencode's
 # opencode.json). The fixture provider is registered by a small extension file
@@ -223,14 +257,14 @@ fi
 
 # The harness inner shell resolves agent-terminal and the bundled Zellij for the
 # direct CLI smoke phase. AGENT_TERMINAL_HOST_PATH keeps the ORIGINAL PATH (no
-# bundled dirs) so the pi prompt phase can prove the extension's spawnHook —
-# not a preloaded PATH — is what exposes the binaries to the Bash tool.
+# bundled dirs) so the prompt phase can prove the adapter's PATH exposure (pi:
+# load-time process.env mutation; omp: per-call bash env input injection) — not
+# a preloaded PATH — is what exposes the binaries to the Bash tool.
 export AGENT_TERMINAL_HOST_PATH="$PATH"
 export PATH="$BUNDLED_ZELLIJ_DIR:$(dirname "$AGENT_TERMINAL_BIN"):$PATH"
 
 # Run the existing lifecycle harness against the fixture.
 export AGENT_TERMINAL_BIN
-export AGENT_TERMINAL_AGENT
 export AGENT_TERMINAL_AGENT_BIN="$AGENT_BIN"
 export AGENT_TERMINAL_EXTENSION="$EXTENSION_PATH"
 export AGENT_TERMINAL_PROVIDER_EXTENSION="$PROVIDER_EXTENSION"

@@ -1,167 +1,265 @@
-import { describe, expect, it } from "bun:test"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { createSpawnHook, deriveSessionId } from "../npm/src/index"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
-describe("deriveSessionId", () => {
-  it("returns the explicit AGENT_TERMINAL_SCOPE when set", () => {
-    const id = deriveSessionId({ AGENT_TERMINAL_SCOPE: "explicit-scope" })
-    expect(id).toBe("explicit-scope")
-  })
+import { createExtension } from "../npm/src/index"
 
-  it("returns PI_SESSION_ID when scope is unset", () => {
-    const id = deriveSessionId({ PI_SESSION_ID: "01a00546-58fa-7000-9ae9-99661b480d76" })
-    expect(id).toBe("01a00546-58fa-7000-9ae9-99661b480d76")
-  })
+type FlagRegistration = {
+  name: string
+  options: { description?: string; type: "boolean" | "string"; default?: boolean | string }
+}
 
-  it("honors AGENT_TERMINAL_SCOPE over PI_SESSION_ID", () => {
-    const id = deriveSessionId({
-      AGENT_TERMINAL_SCOPE: "explicit",
-      PI_SESSION_ID: "pi-session",
-    })
-    expect(id).toBe("explicit")
-  })
+type FakeApi = {
+  registerFlag(name: string, options: FlagRegistration["options"]): void
+  on(event: string, handler: (...args: unknown[]) => unknown): void
+  registerTool(tool: unknown): void
+}
 
-  it("derives session id from PI_SESSION_FILE basename", () => {
-    const id = deriveSessionId({
-      PI_SESSION_FILE:
-        "/home/user/.omp/agent/sessions/-work/2026-08-15T11-54-51-514Z_01a00546-58fa-7000-9ae9-99661b480d76.jsonl",
-    })
-    expect(id).toBe("01a00546-58fa-7000-9ae9-99661b480d76")
-  })
+type FakeApiHarness = {
+  api: FakeApi
+  flags: FlagRegistration[]
+  handlers: Map<string, (...args: unknown[]) => unknown>
+  tools: unknown[]
+}
 
-  it("derives session id from PI_SESSION_FILE with simple filename", () => {
-    const id = deriveSessionId({ PI_SESSION_FILE: "/tmp/sessions/abc123.jsonl" })
-    expect(id).toBe("abc123")
-  })
-
-  it("returns null when both PI_SESSION_ID and PI_SESSION_FILE are unset", () => {
-    const id = deriveSessionId({})
-    expect(id).toBeNull()
-  })
-
-  it("treats empty AGENT_TERMINAL_SCOPE as absent", () => {
-    const id = deriveSessionId({ AGENT_TERMINAL_SCOPE: "", PI_SESSION_ID: "fallback" })
-    expect(id).toBe("fallback")
-  })
-
-  it("treats whitespace AGENT_TERMINAL_SCOPE as absent", () => {
-    const id = deriveSessionId({ AGENT_TERMINAL_SCOPE: "   ", PI_SESSION_ID: "fallback" })
-    expect(id).toBe("fallback")
-  })
-
-  it("treats empty PI_SESSION_ID as absent and falls through to PI_SESSION_FILE", () => {
-    const id = deriveSessionId({
-      PI_SESSION_ID: "",
-      PI_SESSION_FILE: "/tmp/123_abc-def.jsonl",
-    })
-    expect(id).toBe("abc-def")
-  })
-
-  it("returns null when PI_SESSION_FILE basename has no underscore-separated suffix", () => {
-    const id = deriveSessionId({ PI_SESSION_FILE: "/tmp/.jsonl" })
-    expect(id).toBeNull()
-  })
-
-  it("trims the derived session id", () => {
-    const id = deriveSessionId({ PI_SESSION_ID: "  session-with-spaces  " })
-    expect(id).toBe("session-with-spaces")
-  })
-})
-
-describe("createSpawnHook", () => {
-  it("injects AGENT_TERMINAL_SCOPE from PI_SESSION_ID", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: { PI_SESSION_ID: "test-session-123", PATH: "/usr/bin" },
-    })
-    expect(result.env["AGENT_TERMINAL_SCOPE"]).toBe("test-session-123")
-  })
-
-  it("injects AGENT_TERMINAL_SCOPE from PI_SESSION_FILE", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: {
-        PI_SESSION_FILE: "/tmp/2026-01-01T00-00-00-000Z_abc-def-123.jsonl",
-        PATH: "/usr/bin",
+function createFakeApi(): FakeApiHarness {
+  const flags: FlagRegistration[] = []
+  const tools: unknown[] = []
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  return {
+    flags,
+    tools,
+    handlers,
+    api: {
+      registerFlag(name: string, options: FlagRegistration["options"]): void {
+        flags.push({ name, options })
       },
-    })
-    expect(result.env["AGENT_TERMINAL_SCOPE"]).toBe("abc-def-123")
-  })
-
-  it("honors explicit AGENT_TERMINAL_SCOPE over session id", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: {
-        AGENT_TERMINAL_SCOPE: "explicit",
-        PI_SESSION_ID: "session-id",
-        PATH: "/usr/bin",
+      on(event: string, handler: (...args: unknown[]) => unknown): void {
+        handlers.set(event, handler)
       },
-    })
-    expect(result.env["AGENT_TERMINAL_SCOPE"]).toBe("explicit")
-  })
-
-  it("does not set AGENT_TERMINAL_SCOPE when no session id is available", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: { PATH: "/usr/bin" },
-    })
-    expect(result.env["AGENT_TERMINAL_SCOPE"]).toBeUndefined()
-  })
-
-  it("prepends bundled agent-terminal bin dir to PATH", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: { PI_SESSION_ID: "s", PATH: "/usr/bin:/bin" },
-    })
-    expect(result.env["PATH"]).toContain("/fake/package/bin/linux-x64")
-    // The original PATH entries should still be present
-    expect(result.env["PATH"]).toContain("/usr/bin")
-    expect(result.env["PATH"]).toContain("/bin")
-  })
-
-  it("prepends bundled zellij bin dir to PATH when not missing", () => {
-    const hook = createSpawnHook("/fake/package", false)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: { PI_SESSION_ID: "s", PATH: "/usr/bin" },
-    })
-    expect(result.env["PATH"]).toContain("/fake/package/bin/zellij")
-    expect(result.env["PATH"]).toContain("/fake/package/bin/linux-x64")
-  })
-
-  it("does not prepend zellij dir when missing", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: { PI_SESSION_ID: "s", PATH: "/usr/bin" },
-    })
-    expect(result.env["PATH"]).not.toContain("/fake/package/bin/zellij")
-  })
-
-  it("deduplicates PATH entries", () => {
-    const hook = createSpawnHook("/fake/package", true)
-    const result = hook({
-      command: "echo hi",
-      cwd: "/tmp",
-      env: {
-        PI_SESSION_ID: "s",
-        PATH: "/fake/package/bin/linux-x64:/usr/bin",
+      registerTool(tool: unknown): void {
+        tools.push(tool)
       },
+    },
+  }
+}
+
+const tempRoots: string[] = []
+
+type PackageLayoutOptions = {
+  readonly withZellij?: boolean
+}
+
+function createPackageLayout(options: PackageLayoutOptions = {}): string {
+  const root = mkdtempSync(join(tmpdir(), "pi-agent-terminal-test-"))
+  tempRoots.push(root)
+  const binDir = join(root, "bin", "linux-x64")
+  mkdirSync(binDir, { recursive: true })
+  const agentTerminalBin = join(binDir, "agent-terminal")
+  writeFileSync(agentTerminalBin, "#!/bin/sh\nexit 0\n")
+  chmodSync(agentTerminalBin, 0o755)
+  if (options.withZellij === true) {
+    const zellijDir = join(root, "bin", "zellij")
+    mkdirSync(zellijDir, { recursive: true })
+    const zellijBin = join(zellijDir, "zellij")
+    writeFileSync(zellijBin, "#!/bin/sh\nexit 0\n")
+    chmodSync(zellijBin, 0o755)
+  }
+  mkdirSync(join(root, "skills", "agent-terminal"), { recursive: true })
+  return root
+}
+
+function createEmptyRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pi-agent-terminal-empty-"))
+  tempRoots.push(root)
+  return root
+}
+
+function createManagedDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-agent-terminal-agentdir-"))
+  tempRoots.push(dir)
+  return dir
+}
+
+type CreateExtensionTestInput = {
+  readonly arch?: string
+  readonly packageRoot: string
+  readonly platform?: string
+  readonly stderr?: (message: string) => void
+}
+
+function loadExtension(api: FakeApi, input: CreateExtensionTestInput): void {
+  createExtension(input)(api as unknown as ExtensionAPI)
+}
+
+function pathParts(): string[] {
+  return (process.env["PATH"] ?? "").split(":").filter((entry) => entry !== "")
+}
+
+const ORIGINAL_PATH = process.env["PATH"] ?? ""
+
+describe("pi agent-terminal extension", () => {
+  beforeEach(() => {
+    process.env["PATH"] = ORIGINAL_PATH
+  })
+
+  afterEach(() => {
+    process.env["PATH"] = ORIGINAL_PATH
+    delete process.env["PI_CODING_AGENT_DIR"]
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true })
+    }
+    tempRoots.length = 0
+  })
+
+  it("never registers a tool (stock bash stays untouched)", () => {
+    const root = createPackageLayout()
+    const { api, tools } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(tools).toEqual([])
+  })
+
+  it("registers exactly the cwd and no-lsp compatibility flags", () => {
+    const root = createPackageLayout()
+    const { api, flags } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(flags.map((flag) => flag.name)).toEqual(["cwd", "no-lsp"])
+    expect(flags.map((flag) => flag.options.type)).toEqual(["string", "boolean"])
+    for (const flag of flags) {
+      expect(typeof flag.options.description).toBe("string")
+    }
+  })
+
+  it("orders PATH as bundled dirs, managed bin, then the rest, with the managed bin exactly once", () => {
+    const root = createPackageLayout({ withZellij: true })
+    const agentDir = createManagedDir()
+    process.env["PI_CODING_AGENT_DIR"] = agentDir
+    process.env["PATH"] = "/usr/local/bin:/usr/bin"
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(pathParts()).toEqual([
+      join(root, "bin", "zellij"),
+      join(root, "bin", "linux-x64"),
+      join(agentDir, "bin"),
+      "/usr/local/bin",
+      "/usr/bin",
+    ])
+    const managedEntries = pathParts().filter((entry) => entry === join(agentDir, "bin"))
+    expect(managedEntries).toHaveLength(1)
+  })
+
+  it("prepends the zellij bin dir when the bundled zellij exists", () => {
+    const root = createPackageLayout({ withZellij: true })
+    const agentDir = createManagedDir()
+    process.env["PI_CODING_AGENT_DIR"] = agentDir
+    process.env["PATH"] = "/usr/bin"
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(pathParts()[0]).toBe(join(root, "bin", "zellij"))
+    expect(pathParts()[1]).toBe(join(root, "bin", "linux-x64"))
+  })
+
+  it("skips the zellij bin dir when the bundled zellij is absent", () => {
+    const root = createPackageLayout()
+    const agentDir = createManagedDir()
+    process.env["PI_CODING_AGENT_DIR"] = agentDir
+    process.env["PATH"] = "/usr/bin"
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(pathParts()[0]).toBe(join(root, "bin", "linux-x64"))
+    expect(pathParts()).not.toContain(join(root, "bin", "zellij"))
+  })
+
+  it("does not duplicate PATH entries that are already present", () => {
+    const root = createPackageLayout({ withZellij: true })
+    const agentDir = createManagedDir()
+    process.env["PI_CODING_AGENT_DIR"] = agentDir
+    process.env["PATH"] = `${join(agentDir, "bin")}:${join(root, "bin", "linux-x64")}:/usr/bin`
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    const parts = pathParts()
+    expect(parts.filter((entry) => entry === join(agentDir, "bin"))).toHaveLength(1)
+    expect(parts.filter((entry) => entry === join(root, "bin", "linux-x64"))).toHaveLength(1)
+    expect(parts.filter((entry) => entry === join(root, "bin", "zellij"))).toHaveLength(1)
+    expect(parts.slice(3)).toEqual(["/usr/bin"])
+  })
+
+  it("registers a resources_discover handler that returns the skills path", async () => {
+    const root = createPackageLayout()
+    const { api, handlers } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    const handler = handlers.get("resources_discover")
+    expect(handler).toBeTypeOf("function")
+    const result = (await handler?.()) as { skillPaths?: string[] } | undefined
+    expect(result?.skillPaths).toEqual([join(root, "skills")])
+  })
+
+  it("does nothing on non-linux platforms and reports a diagnostic", () => {
+    const root = createPackageLayout()
+    process.env["PATH"] = "/usr/bin"
+    const diagnostics: string[] = []
+    const { api, flags, tools } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "darwin",
+      arch: "x64",
+      stderr: (message) => diagnostics.push(message),
     })
-    const pathParts = result.env["PATH"]?.split(":") ?? []
-    const agentTerminalEntries = pathParts.filter((p) => p === "/fake/package/bin/linux-x64")
-    expect(agentTerminalEntries.length).toBe(1)
+    expect(process.env["PATH"]).toBe("/usr/bin")
+    expect(diagnostics).toEqual([
+      "[agent-terminal] unsupported platform: darwin. This package supports Linux only.",
+    ])
+    expect(flags).toEqual([])
+    expect(tools).toEqual([])
+  })
+
+  it("does nothing on non-x64 architectures and reports a diagnostic", () => {
+    const root = createPackageLayout()
+    process.env["PATH"] = "/usr/bin"
+    const diagnostics: string[] = []
+    const { api } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "linux",
+      arch: "arm64",
+      stderr: (message) => diagnostics.push(message),
+    })
+    expect(process.env["PATH"]).toBe("/usr/bin")
+    expect(diagnostics).toEqual([
+      "[agent-terminal] unsupported architecture: arm64. This package supports x86_64 Linux only.",
+    ])
+  })
+
+  it("reports a diagnostic and skips PATH mutation when the bundled binary is missing", () => {
+    const root = createEmptyRoot()
+    process.env["PATH"] = "/usr/bin"
+    const diagnostics: string[] = []
+    const { api, flags } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "linux",
+      arch: "x64",
+      stderr: (message) => diagnostics.push(message),
+    })
+    expect(process.env["PATH"]).toBe("/usr/bin")
+    expect(diagnostics).toEqual([
+      `[agent-terminal] bundled executable is missing or not executable: ${join(root, "bin", "linux-x64", "agent-terminal")}`,
+    ])
+    // The compatibility flags are still registered so the CLI accepts them.
+    expect(flags.map((flag) => flag.name)).toEqual(["cwd", "no-lsp"])
+  })
+
+  it("derives the PATH entries from the injected packageRoot", () => {
+    const root = createPackageLayout({ withZellij: true })
+    process.env["PATH"] = "/usr/bin"
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    const parts = pathParts()
+    expect(parts[0]).toBe(join(root, "bin", "zellij"))
+    expect(parts[1]).toBe(join(root, "bin", "linux-x64"))
+    expect(parts.slice(3)).toEqual(["/usr/bin"])
   })
 })

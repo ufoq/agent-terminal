@@ -127,41 +127,75 @@ scope or working directory.
 
 ## pi / omp skill
 
-Two npm packages are published:
+Four npm packages are published, one slim and one Zellij-bundling variant per host:
 
 - `@ufoq/pi-agent-terminal` — bundles the static Linux x86_64 `agent-terminal` binary and the
   skill. The host must have Zellij on `PATH`.
 - `@ufoq/pi-agent-terminal-bundle-zellij` — same as above, plus a pinned Zellij binary so no
   host install is required.
+- `@ufoq/omp-agent-terminal` — the omp variant of the slim package.
+- `@ufoq/omp-agent-terminal-bundle-zellij` — the omp variant with the pinned Zellij binary.
 
-The extension is loaded via pi's `-e` flag, or auto-discovered from
-`~/.pi/agent/extensions/` (pi) or `~/.omp/agent/extensions/` (omp). Both packages declare the
-extension entry point in their `pi.extensions` manifest field.
+Each package ships a per-host adapter extension (`pi.extensions` manifest) plus the bundled
+binary and skill. The pi packages are loaded via pi's `-e` flag or auto-discovered from
+`~/.pi/agent/extensions/`; the omp packages via omp's `-e` flag or auto-discovered from
+`~/.omp/agent/extensions/`.
 
-On load, the extension:
+### pi adapter
 
-- registers the CLI flags `--cwd`, `--no-lsp`, and `--no-context-files`, which pi does not
-  provide natively;
-- re-registers the bash tool with a `spawnHook` that injects `AGENT_TERMINAL_SCOPE` and
-  prepends the bundled binary directories to `PATH` for every bash command the agent runs;
-- registers the bundled `agent-terminal` skill via `resources_discover`.
+The pi adapter does not touch the bash tool at all: pi's native bash keeps its stock
+definition, and the extension only
 
-Scope injection differs between the two agents:
+- mutates `process.env.PATH` at load time so the bundled binary directories (`bin/linux-x64`
+  and, for the bundle variant, `bin/zellij`) are ordered ahead of pi's managed
+  `~/.pi/agent/bin` — this also satisfies pi's own conditional managed-bin prepend, so the
+  bundled `agent-terminal` and Zellij always win without host installs;
+- registers the bundled `agent-terminal` skill via `resources_discover`;
+- registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide
+  natively. These are compatibility registrations only: the adapter makes no behavior
+  claims, and `--cwd` no longer feeds a bash tool (bash's working directory is the
+  invocation directory).
 
-- pi injects `PI_SESSION_ID` into the bash tool environment, so the `spawnHook` derives the
-  scope from it directly.
-- omp does not inject session environment variables, so the extension captures the session id
-  from the execute context's `sessionManager` and falls back to it in the `spawnHook`.
+Per-session isolation is native: pi injects `PI_SESSION_ID` into every bash child, and the
+Rust CLI falls back to `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID` → `standalone`. No extension
+code is involved, so pi gets per-session isolation even when the extension is not loaded.
 
-The Rust CLI falls back to `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID` → `standalone`, so pi
-gets per-session isolation even when the extension is not loaded. omp does not expose
-`PI_SESSION_ID` to bash commands, so it requires the extension for per-session isolation;
-without it, omp sessions share the `standalone` scope.
+### omp adapter
 
-To use it, add the package to your pi/omp config or load the extension with `-e`:
+omp's native bash tool is not replaced either: the adapter registers a
+`tool_call` input-revision handler that adjusts the arguments bash executes with, preserving
+the native schema, approval gate, concurrency, and `async` conditionality by construction.
+For each `bash` tool call it
+
+- defaults `AGENT_TERMINAL_SCOPE` to the omp session id (from the runtime context's
+  `sessionManager`) when the call carries no explicit value. Explicit values always win —
+  including shell-level assignments such as `AGENT_TERMINAL_SCOPE=shared printenv
+  AGENT_TERMINAL_SCOPE`, since bash env values are passed as environment values, not shell
+  text. Without a session id (or without a session manager), the scope is left unset and the
+  CLI falls back to `standalone`;
+- prepends the bundled binary directories to the bash `env.PATH`, keeping the process PATH
+  as the base so host binaries remain resolvable;
+- registers the compatibility flag `--no-context-files`, which omp does not provide
+  natively (`--no-lsp` and `--cwd` are native to omp and are not registered).
+
+The skill is discovered natively: omp's `omp-plugins` provider registers
+`skills/agent-terminal/SKILL.md` for packages loaded through `-e <package root>` or the
+`npm:` spec, so no `resources_discover` handler is needed.
+
+Known caveats:
+
+- On direnv projects, an explicit bash `env.PATH` takes precedence over the `.envrc` PATH
+  (omp's native caller-env-over-direnv precedence); the bundled binaries and the process
+  PATH are always available.
+- `tool_call` input revisions compose across extensions with the last returned input
+  winning, and handlers do not observe each other's revisions — another extension revising
+  bash input may override this adapter's revision or vice versa.
+
+To use it, load the package for your host with `-e`:
 
 ```bash
 pi -e npm:@ufoq/pi-agent-terminal-bundle-zellij
+omp -e npm:@ufoq/omp-agent-terminal-bundle-zellij
 ```
 
 ## Lifecycle
@@ -187,9 +221,10 @@ visible terminal screen, not a canonical stdout/stderr log.
 
 Each OpenCode session gets its own invisible scope so concurrent agents never interfere. The plugin
 sets `AGENT_TERMINAL_SCOPE` to the session id by default; state and Zellij sockets are isolated
-per-scope. The pi/omp extension does the same: its `spawnHook` injects `AGENT_TERMINAL_SCOPE`
-from `PI_SESSION_ID` (pi) or from the execute context's `sessionManager` (omp), and the Rust CLI
-falls back to `PI_SESSION_ID` when the extension is absent. The model uses only job names and does
+per-scope. The pi/omp adapters do the same by default: pi via its native `PI_SESSION_ID`
+(which the Rust CLI falls back to when the extension is absent), and omp via the adapter's
+`tool_call` revision defaulting `AGENT_TERMINAL_SCOPE` to the omp session id. The model uses
+only job names and does
 not manage scoping. The variable is optional and overridable: to share terminal state across
 agents (e.g. a parent and subagent on the same task), each sets it to the same task-specific value
 such as `20260803-fix-auth-refactor` — the plugin honors an explicit value unchanged and only
@@ -284,12 +319,25 @@ quality gate (`cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo te
 `scripts/e2e-pi-local.sh` is a fully automated, deterministic gate mirroring the OpenCode gate
 but driving pi/omp instead. It runs as the invoking user, starts the same local
 OpenAI-compatible **fixture** server that drives the agent-terminal lifecycle deterministically,
-builds the locally bundled `@ufoq/pi-agent-terminal-bundle-zellij` package, and exercises a real
-Zellij server end-to-end through the real pi/omp binary with the extension loaded via `-e`.
+builds the locally bundled package for the agent under test, and exercises a real Zellij
+server end-to-end through the real pi/omp binary with the per-agent extension loaded via `-e`.
 
-`AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`. The fixture
-provider is registered through a small provider extension file, since pi/omp do not read a
-config file for custom providers the way OpenCode does.
+`AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`. Each agent uses
+its own package (`pi/npm/packages/pi-agent-terminal-bundle-zellij` for pi,
+`omp/npm/packages/omp-agent-terminal-bundle-zellij` for omp) and its own workspace build; the
+preflight runs the per-agent workspace `bun run build`. The fixture provider is registered
+through a small provider extension file, since pi/omp do not read a config file for custom
+providers the way OpenCode does.
+
+The prompt's first steps are per-agent scope probes that verify the host's scope mechanism
+end to end:
+
+- pi: one probe, `printenv PI_SESSION_ID` — its output must equal the transcript's session
+  header id (native `PI_SESSION_ID` → Rust CLI fallback).
+- omp: two probes — `printenv AGENT_TERMINAL_SCOPE` (must equal the session header id, via
+  the adapter's `tool_call` revision) and `AGENT_TERMINAL_SCOPE=shared printenv
+  AGENT_TERMINAL_SCOPE` (must print `shared`, proving an explicit value overrides the
+  injected default).
 
 The fixture and verifier strip omp's "Wall time: X seconds" output suffix, which omp's bash
 tool appends after the actual command output, so the strict JSON matching works for both
@@ -300,21 +348,55 @@ AGENT_TERMINAL_AGENT=pi bash scripts/e2e-pi-local.sh
 AGENT_TERMINAL_AGENT=omp bash scripts/e2e-pi-local.sh
 ```
 
-Run from `pi/` with Bun:
+Run the per-agent gate from its own workspace with Bun:
 
 ```bash
 cd pi
 bun run e2e:pi
 bun run e2e:pi:skip-prompt
+```
+
+```bash
+cd omp
 bun run e2e:omp
 bun run e2e:omp:skip-prompt
 ```
 
-The full release gate also runs `bun run check` first:
+The full release gate also runs the per-agent workspace `bun run check` first:
 
 ```bash
 cd pi
 bun run release:check
+```
+
+`AGENT_TERMINAL_JOB_NAME` overrides the job name used by the fixture, prompt, and verifier
+(default `prompt-smoke-$RUN_ID`); the two-session isolation script uses it to keep both
+concurrent runs on the same job name.
+
+Two additional scripts cover cross-session and skill concerns beyond the lifecycle gate:
+
+- `scripts/e2e-two-session.sh` — a deterministic two-session isolation gate for the selected
+  agent. It builds once, starts two fixture servers with `AGENT_TERMINAL_FIXTURE_HOLD=1`
+  (each holding its job open for `AGENT_TERMINAL_FIXTURE_HOLD_SECS`, default 45 seconds),
+  and runs two agent sessions concurrently against one shared project directory, state root,
+  and Zellij socket dir. It asserts the two session header ids differ, and during the hold
+  window runs direct-CLI cross-checks: `agent-terminal list` under each scope sees exactly
+  its own job, and `agent-terminal read server` under each scope reads its own pane. Both
+  sessions then complete the full lifecycle with empty final lists.
+- `scripts/e2e-skill-discovery.sh` — a unified skill-discovery smoke for both hosts. With
+  `AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1`, the mini fixture inspects the first provider
+  request's messages and asserts the skill's DESCRIPTION phrase ("Run persistent or
+  interactive terminal jobs through a simple Zellij wrapper") is present, proving the
+  extension loads, the skill registers (via `resources_discover` on pi, via omp's native
+  `omp-plugins` provider on omp), and the skill metadata reaches the model request. The omp
+  run loads the extension with `-e <package root>` — the package root, not the dist file —
+  because sibling `skills/` discovery only registers for package-root directories.
+
+```bash
+AGENT_TERMINAL_AGENT=pi bash scripts/e2e-two-session.sh
+AGENT_TERMINAL_AGENT=omp bash scripts/e2e-two-session.sh
+AGENT_TERMINAL_AGENT=pi bash scripts/e2e-skill-discovery.sh
+AGENT_TERMINAL_AGENT=omp bash scripts/e2e-skill-discovery.sh
 ```
 
 ### Optional real-model e2e
@@ -381,7 +463,9 @@ Environment variables:
 
 `scripts/e2e-pi-real.sh` is the **optional, local-only** companion test for pi/omp, mirroring
 `scripts/e2e-opencode-real.sh`. It drives the same lifecycle through the real pi/omp binary with
-a **real model** from your own pi config, and — like the OpenCode version — it consumes real
+a **real model** from your own pi config, loading the per-agent package (`pi/npm/packages/
+pi-agent-terminal-bundle-zellij` for pi, `omp/npm/packages/omp-agent-terminal-bundle-zellij` for
+omp), and — like the OpenCode version — it consumes real
 tokens, is not part of `release:check`, and is refused under CI unless you opt in. `AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`.
 
 ```bash
@@ -395,11 +479,15 @@ from your personal pi config leaks into the test run, and provider credentials a
 only via an explicit env-var allowlist (`AGENT_TERMINAL_PROVIDER_ENV_VARS`) — never the whole host
 environment.
 
-Run from `pi/` with Bun:
+Run from the agent's own workspace with Bun:
 
 ```bash
 cd pi
 bun run e2e:pi:real
+```
+
+```bash
+cd omp
 bun run e2e:omp:real
 ```
 
@@ -444,10 +532,16 @@ cd opencode
 bun test -t 'teaches CLI commands'
 ```
 
-pi/omp extension quality gate:
+pi/omp extension quality gates:
 
 ```bash
 cd pi
+bun install
+bun run check
+```
+
+```bash
+cd omp
 bun install
 bun run check
 ```
@@ -456,7 +550,7 @@ Single pi extension test:
 
 ```bash
 cd pi
-bun test -t 'deriveSessionId'
+bun test -t 'PATH ordering'
 ```
 
 Real-Zellij integration tests create isolated controller sessions and remove them in test cleanup.

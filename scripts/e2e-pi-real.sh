@@ -46,11 +46,18 @@ umask 077
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly E2E_HARNESS="$REPO_ROOT/scripts/e2e-pi.sh"
 readonly PI_ROOT="$REPO_ROOT/pi"
-readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
+
+AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
+if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
+  readonly WS_ROOT="$REPO_ROOT/omp"
+  readonly BUNDLE_PACKAGE="$WS_ROOT/npm/packages/omp-agent-terminal-bundle-zellij"
+else
+  readonly WS_ROOT="$PI_ROOT"
+  readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
+fi
 
 CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
-AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
 
 RUN_DIR=""
 SANDBOX_PI_DIR=""
@@ -132,10 +139,10 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 
 # Build the local bundle-zellij npm package (Rust musl binary + extension +
-# skill + pinned Zellij).
+# skill + pinned Zellij) for the agent under test.
 if [[ $SKIP_PREFLIGHT != 1 ]]; then
-  printf 'Building local pi npm package ...\n'
-  cd "$PI_ROOT"
+  printf 'Building local %s npm package ...\n' "$AGENT_TERMINAL_AGENT"
+  cd "$WS_ROOT"
   if ! bun run build; then
     fail "bun run build failed"
   fi
@@ -351,14 +358,18 @@ if [[ -n $PROVIDER_ENV_VARS ]]; then
 fi
 
 # Use the same static musl binary that was just bundled into the package.
-# AGENT_TERMINAL_HOST_PATH keeps the ORIGINAL PATH (no bundled dirs) so the pi
-# prompt phase can prove the extension's spawnHook - not a preloaded PATH - is
-# what exposes the binaries to the Bash tool.
+# AGENT_TERMINAL_HOST_PATH keeps the ORIGINAL PATH (no bundled dirs) so the
+# prompt phase can prove the adapter's PATH exposure (pi: load-time
+# process.env mutation; omp: per-call bash env input injection) - not a
+# preloaded PATH - is what exposes the binaries to the Bash tool.
 export AGENT_TERMINAL_HOST_PATH="$PATH"
 export PATH="$BUNDLED_ZELLIJ_DIR:$(dirname "$AGENT_TERMINAL_BIN"):$PATH"
 
 export AGENT_TERMINAL_BIN
 export AGENT_TERMINAL_AGENT
+# Pass through an exact job name when the caller set one (the harness
+# defaults to prompt-smoke-$RUN_ID otherwise).
+export AGENT_TERMINAL_JOB_NAME="${AGENT_TERMINAL_JOB_NAME:-}"
 export AGENT_TERMINAL_AGENT_BIN="$AGENT_BIN"
 export AGENT_TERMINAL_EXTENSION="$EXTENSION_PATH"
 export AGENT_TERMINAL_PI_CONFIG_DIR="$SANDBOX_PI_DIR"

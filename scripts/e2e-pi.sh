@@ -35,7 +35,12 @@ AGENT_TERMINAL_SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
 AGENT_TERMINAL_HOST_PATH="${AGENT_TERMINAL_HOST_PATH:-$HOST_PATH}"
 
 readonly RUN_ID="$$"
-readonly JOB_NAME="prompt-smoke-$RUN_ID"
+JOB_NAME="${AGENT_TERMINAL_JOB_NAME:-prompt-smoke-$RUN_ID}"
+if [[ ! $JOB_NAME =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+  printf 'error: AGENT_TERMINAL_JOB_NAME must match [a-z0-9][a-z0-9._-]{0,63}, got: %s\n' "$JOB_NAME" >&2
+  exit 1
+fi
+readonly JOB_NAME
 readonly SHORT_BASE="/tmp/ate2e-$$"
 readonly WORKDIR="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID/workdir"
 readonly SANDBOX="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID"
@@ -68,19 +73,29 @@ cleanup() {
     done <<<"$sessions"
   fi
 
-  # agent-terminal uses its own scope-derived socket dirs at
-  # /tmp/agent-terminal-<scope-digest>. Clean up any that were created
-  # during the run to avoid leaving detached Zellij servers behind.
-  for at_sock in /tmp/agent-terminal-*; do
-    [[ -d $at_sock ]] || continue
-    sessions="$(env ZELLIJ_SOCKET_DIR="$at_sock" zellij list-sessions --short --no-formatting 2>/dev/null || true)"
-    while IFS= read -r session; do
-      if [[ $session == agent-terminal-* ]]; then
-        env ZELLIJ_SOCKET_DIR="$at_sock" zellij kill-session "$session" >/dev/null 2>&1 || true
-      fi
-    done <<<"$sessions"
-    rm -rf "$at_sock" 2>/dev/null || true
-  done
+  # agent-terminal derives each scope's socket dir as
+  # /tmp/agent-terminal-<scope-digest> (src/paths.rs) and creates the scope
+  # root under this run's state dir ($STATE_DIR/scopes/<digest>) on first
+  # bootstrap. Clean up ONLY this run's derived socket dirs by reading the
+  # digests back from our own state root — never by globbing
+  # /tmp/agent-terminal-* or killing sessions by global wildcard (other runs'
+  # socket dirs would be swept). Zellij servers in those dirs are killed
+  # first so no detached session survives; the dirs are then removed.
+  if [[ -d $STATE_DIR/scopes ]]; then
+    for scope_root in "$STATE_DIR"/scopes/*; do
+      [[ -d $scope_root ]] || continue
+      digest="$(basename "$scope_root")"
+      at_sock="/tmp/agent-terminal-$digest"
+      [[ -d $at_sock ]] || continue
+      sessions="$(env ZELLIJ_SOCKET_DIR="$at_sock" zellij list-sessions --short --no-formatting 2>/dev/null || true)"
+      while IFS= read -r session; do
+        if [[ $session == agent-terminal-* ]]; then
+          env ZELLIJ_SOCKET_DIR="$at_sock" zellij kill-session "$session" >/dev/null 2>&1 || true
+        fi
+      done <<<"$sessions"
+      rm -rf "$at_sock" 2>/dev/null || true
+    done
+  fi
 
   if [[ $AGENT_TERMINAL_CLEANUP != 1 && -d $ARTIFACT_DIR ]]; then
     EVIDENCE_DIR="/tmp/agent-terminal-$AGENT_TERMINAL_RUN_PREFIX-$RUN_ID-evidence"
@@ -212,7 +227,20 @@ install -d -m 0700 \
   "$ARTIFACT_DIR" \
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
-sed -e "s/__RUN_ID__/$RUN_ID/g" -e "s|__WORKDIR__|$WORKDIR|g" >"$PROMPT_FILE" <<'PROMPT_EOF'
+# The probe steps differ per agent (pi: PI_SESSION_ID; omp: injected
+# AGENT_TERMINAL_SCOPE plus an explicit override probe), so the prompt's step
+# count and numbering shift accordingly. The 9 lifecycle steps are written
+# once with __STEP_N__ markers and renumbered below.
+if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
+  TOTAL_STEPS=11
+  LIFECYCLE_OFFSET=2
+else
+  TOTAL_STEPS=10
+  LIFECYCLE_OFFSET=1
+fi
+
+{
+  cat <<'PROMPT_HEAD'
 This is an execution task, not a writing or planning task. Work only in __WORKDIR__. Do not output any prose, Markdown, YAML, code block, template, plan, or simulated transcript.
 
 Execution contract:
@@ -220,22 +248,40 @@ Execution contract:
 - Wait for the real Bash command's JSON output, inspect it, and then emit the next Bash tool call. Do not predict or invent command output.
 - You must NOT call the read, write, task, or any other non-Bash tool for any purpose. The word "read" below always means the Bash command `agent-terminal read`, never the read tool.
 - You must NOT delegate to a subagent, create files, or emit simulated/agent-terminal commands inside Markdown or YAML blocks.
-- If any step fails, stop and report the failure; only end with E2E_SUCCESS after step 10 passes.
+- If any step fails, stop and report the failure; only end with E2E_SUCCESS after step __TOTAL_STEPS__ passes.
 
-Perform this exact 10-step lifecycle using the job name prompt-smoke-__RUN_ID__:
-0. Bash: run `printenv AGENT_TERMINAL_SCOPE` and confirm it prints the current pi session id (non-empty). This verifies the extension injected the per-session scope.
-1. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
-2. Bash: start the interactive job with `agent-terminal start prompt-smoke-__RUN_ID__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
-3. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
-4. Bash: send the literal text hello-e2e with `agent-terminal send prompt-smoke-__RUN_ID__ -- hello-e2e`.
-5. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify its JSON screen contains first:hello-e2e.
-6. Bash: press Enter with `agent-terminal press prompt-smoke-__RUN_ID__ -- Enter`.
-7. Bash: `agent-terminal read prompt-smoke-__RUN_ID__` and verify the JSON reports state exited with exit_code 0 and its screen contains second:.
-8. Bash: `agent-terminal stop prompt-smoke-__RUN_ID__` and verify the JSON response is the status ok acknowledgement.
-9. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
+Perform this exact __TOTAL_STEPS__-step lifecycle using the job name __JOB_NAME__:
+PROMPT_HEAD
+  if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
+    cat <<'PROMPT_PROBE'
+1. Bash: run `printenv AGENT_TERMINAL_SCOPE` and confirm it prints the current omp session id (non-empty). This verifies the extension injected the per-session scope into the Bash tool environment.
+2. Bash: run `AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE` and confirm it prints the literal text shared. This verifies an explicit scope override wins over the injected default.
+PROMPT_PROBE
+  else
+    cat <<'PROMPT_PROBE'
+1. Bash: run `printenv PI_SESSION_ID` and confirm it prints the current pi session id (non-empty). This verifies the per-session scope is available to the Bash tool.
+PROMPT_PROBE
+  fi
+  cat <<'PROMPT_LIFECYCLE'
+__STEP_1__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
+__STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
+__STEP_3__. Bash: `agent-terminal read __JOB_NAME__` and verify its JSON screen contains prompt-ready. Retry the Bash read command briefly only if the pane has not rendered it yet.
+__STEP_4__. Bash: send the literal text hello-e2e with `agent-terminal send __JOB_NAME__ -- hello-e2e`.
+__STEP_5__. Bash: `agent-terminal read __JOB_NAME__` and verify its JSON screen contains first:hello-e2e.
+__STEP_6__. Bash: press Enter with `agent-terminal press __JOB_NAME__ -- Enter`.
+__STEP_7__. Bash: `agent-terminal read __JOB_NAME__` and verify the JSON reports state exited with exit_code 0 and its screen contains second:.
+__STEP_8__. Bash: `agent-terminal stop __JOB_NAME__` and verify the JSON response is the status ok acknowledgement.
+__STEP_9__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 
-Do not modify repository files. After all ten steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
-PROMPT_EOF
+Do not modify repository files. After all __TOTAL_STEPS__ steps pass, end your final response with a separate line containing exactly E2E_SUCCESS. Do not print E2E_SUCCESS if any step fails.
+PROMPT_LIFECYCLE
+} >"$PROMPT_FILE"
+
+sed_exprs=(-e "s/__TOTAL_STEPS__/$TOTAL_STEPS/g" -e "s/__JOB_NAME__/$JOB_NAME/g" -e "s|__WORKDIR__|$WORKDIR|g")
+for i in $(seq 1 9); do
+  sed_exprs+=(-e "s/__STEP_${i}__/$((i + LIFECYCLE_OFFSET))/g")
+done
+sed -i "${sed_exprs[@]}" "$PROMPT_FILE"
 
 readonly INNER_SCRIPT="$SANDBOX/run-e2e-inner.sh"
 cat >"$INNER_SCRIPT" <<'INNER'
@@ -256,9 +302,9 @@ trap fail_phase ERR
 : >"$ARTIFACT_DIR/prompt-e2e.jsonl"
 : >"$ARTIFACT_DIR/prompt-e2e.stderr.log"
 
-phase "pi skill tests"
-printf '== pi skill tests ==\n'
-cd "$REPO_ROOT/pi"
+phase "$AGENT_TERMINAL_AGENT skill tests"
+printf '== %s skill tests ==\n' "$AGENT_TERMINAL_AGENT"
+cd "$REPO_ROOT/$AGENT_TERMINAL_AGENT"
 bun test 2>&1 | tee "$ARTIFACT_DIR/bun-test.log"
 
 LAST_JSON=""
@@ -289,6 +335,12 @@ run_cli() {
 phase "direct CLI smoke test"
 printf '\n== Direct CLI smoke test ==\n' | tee -a "$ARTIFACT_DIR/cli-smoke.log"
 cd "$WORKDIR"
+# Isolate the smoke from every other gate run: a per-run state root and a
+# per-run scope. Without this, concurrent gates share the default state root
+# and the standalone scope (and its derived socket dir), so one run's smoke
+# collides with another's on the controller lock and state file.
+export AGENT_TERMINAL_STATE="$STATE_DIR"
+export PI_SESSION_ID="e2e-smoke-$RUN_ID"
 
 run_cli list-before list
 JSON_FILE="$LAST_JSON" bun -e '
@@ -338,13 +390,13 @@ if [[ $remaining_sessions == *agent-terminal-* ]]; then
 fi
 
 if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
-  phase "pi prompt e2e"
-  printf '\n== pi prompt e2e ==\n'
+  phase "$AGENT_TERMINAL_AGENT prompt e2e"
+  printf '\n== %s prompt e2e ==\n' "$AGENT_TERMINAL_AGENT"
 
-  # TODO: explicit skill-registration check. pi/omp have no `debug skill`
-  # command (unlike opencode), so there is no CLI probe for the bundled skill.
-  # The e2e lifecycle itself proves the extension loaded and its spawnHook
-  # PATH injection worked, which is the behavior this gate must protect.
+  # The bundled skill is registered by the extension's skill loader; the
+  # dedicated scripts/e2e-skill-discovery.sh gate probes its description
+  # phrase in a live agent session (the pi/omp CLIs have no `debug skill`
+  # command unlike opencode, so there is no CLI probe for it).
   AGENT_FLAGS=""
   if [[ $AGENT_TERMINAL_AGENT == "omp" ]]; then
     AGENT_FLAGS="--auto-approve --no-pty"
@@ -354,14 +406,15 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   # shellcheck disable=SC2086
   PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-600}"
   # Run the agent with a PATH that does not contain the bundled binaries. The
-  # extension's spawnHook still exposes them to the Bash tool, so the clean
-  # PATH alone does NOT prove the hook fired. Scope injection
-  # (AGENT_TERMINAL_SCOPE) is proven separately by the scope-probe Bash call
-  # that the verifier asserts is the first tool execution and that it matches
-  # the transcript's session id. The agent is launched from the workdir so the
-  # Bash tool's default cwd is the workdir even if the extension's --cwd flag
-  # is not honored. In strict mode the fixture provider extension is loaded
-  # alongside the agent-terminal extension; in real mode only the
+  # pi adapter's load-time PATH mutation / omp adapter's per-call env PATH
+  # injection still expose them to the Bash tool, so the clean PATH alone does
+  # NOT prove the adapters fired. Scope exposure (PI_SESSION_ID for pi,
+  # AGENT_TERMINAL_SCOPE for omp) is proven separately by the scope-probe Bash
+  # calls that the verifier asserts are the first tool executions and that
+  # match the transcript's session id. The agent is launched from the workdir
+  # so the Bash tool's default cwd is the workdir even if the extension's
+  # --cwd flag is not honored. In strict mode the fixture provider extension
+  # is loaded alongside the agent-terminal extension; in real mode only the
   # agent-terminal extension is loaded and the provider/model come from the
   # projected config via --provider/--model.
   cd "$WORKDIR"
@@ -374,7 +427,7 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
       >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
       cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
       cat "$ARTIFACT_DIR/prompt-e2e.jsonl" >&2
-      printf 'error: pi prompt e2e failed or exceeded %ss timeout\n' "$PROMPT_E2E_TIMEOUT" >&2
+      printf 'error: %s prompt e2e failed or exceeded %ss timeout\n' "$AGENT_TERMINAL_AGENT" "$PROMPT_E2E_TIMEOUT" >&2
       exit 1
     fi
   else
@@ -386,14 +439,14 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
       >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
       cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
       cat "$ARTIFACT_DIR/prompt-e2e.jsonl" >&2
-      printf 'error: pi prompt e2e failed or exceeded %ss timeout\n' "$PROMPT_E2E_TIMEOUT" >&2
+      printf 'error: %s prompt e2e failed or exceeded %ss timeout\n' "$AGENT_TERMINAL_AGENT" "$PROMPT_E2E_TIMEOUT" >&2
       exit 1
     fi
   fi
 
   cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
   cat "$ARTIFACT_DIR/prompt-e2e.jsonl"
-  PROMPT_LOG="$ARTIFACT_DIR/prompt-e2e.jsonl" bun run "$REPO_ROOT/pi/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE" --workdir "$WORKDIR"
+  bun run "$REPO_ROOT/pi/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE" --workdir "$WORKDIR" --agent "$AGENT_TERMINAL_AGENT"
 fi
 
 printf '\nAll executed e2e phases passed.\n'
@@ -401,12 +454,17 @@ INNER
 
 chmod 0755 "$INNER_SCRIPT"
 
+# The inner script's direct-CLI smoke phase references these to isolate its
+# scope and state from other concurrent gate runs.
+export STATE_DIR RUN_ID
+
 
 phase "e2e execution"
 printf 'Running e2e phases as %s; artifacts: %s\n' "$(id -un)" "$ARTIFACT_DIR"
 
-# AGENT_TERMINAL_SCOPE is deliberately NOT set here: the extension's spawnHook
-# must inject it per session, and setting it would defeat the scope probe.
+# AGENT_TERMINAL_SCOPE is deliberately NOT set here: the adapter must expose
+# the per-session scope (pi's native PI_SESSION_ID, omp's injected
+# AGENT_TERMINAL_SCOPE), and setting it would defeat the scope probes.
 # Pass through the explicitly allowlisted provider env vars (values are stripped
 # by env -i otherwise). Everything else stays out of the sandbox.
 PROVIDER_ENV_PASSTHRU=()
@@ -471,5 +529,8 @@ env -i \
   ARTIFACT_DIR="$ARTIFACT_DIR" \
   PROMPT_FILE="$PROMPT_FILE" \
   JOB_NAME="$JOB_NAME" \
+  AGENT_TERMINAL_JOB_NAME="$JOB_NAME" \
+  STATE_DIR="$STATE_DIR" \
+  RUN_ID="$RUN_ID" \
   "${PROVIDER_ENV_PASSTHRU[@]}" \
   script -q -e -E never -c "$INNER_SCRIPT" "$ARTIFACT_DIR/transcript.log"

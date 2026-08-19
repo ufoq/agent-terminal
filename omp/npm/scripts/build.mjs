@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Build script for the @ufoq/pi-agent-terminal npm packages.
+// Build script for the @ufoq/omp-agent-terminal npm packages.
 //
 // This script builds two sibling packages from one shared source:
-//   1. packages/pi-agent-terminal/ — agent-terminal + skill only
-//   2. packages/pi-agent-terminal-bundle-zellij/ — agent-terminal + skill + pinned Zellij
+//   1. packages/omp-agent-terminal/ — agent-terminal + skill only
+//   2. packages/omp-agent-terminal-bundle-zellij/ — agent-terminal + skill + pinned Zellij
 //
 // It runs from the repository root (`../../` relative to this script) so that
 // the Rust binary is built once and then copied into both package outputs.
@@ -30,17 +30,15 @@ const npmRoot = dirname(__dirname)
 const packagesDir = join(npmRoot, "packages")
 const sharedSrc = join(npmRoot, "src", "index.ts")
 
-const slimPackage = join(packagesDir, "pi-agent-terminal")
-const bundlePackage = join(packagesDir, "pi-agent-terminal-bundle-zellij")
+const slimPackage = join(packagesDir, "omp-agent-terminal")
+const bundlePackage = join(packagesDir, "omp-agent-terminal-bundle-zellij")
 
 async function main() {
   cleanPackage(slimPackage)
   cleanPackage(bundlePackage)
 
   const targetBin = buildAgentTerminalBinary()
-  const distDir = compileTypeScript(sharedSrc, join(npmRoot, "dist"), [
-    "@earendil-works/pi-coding-agent",
-  ])
+  const distDir = compileTypeScript(sharedSrc, join(npmRoot, "dist"), [])
   run("tsc", ["--emitDeclarationOnly"], { cwd: npmRoot })
 
   for (const packageRoot of [slimPackage, bundlePackage]) {

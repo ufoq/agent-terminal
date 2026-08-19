@@ -1,8 +1,25 @@
 // Deterministic OpenAI-compatible e2e fixture for pi's openai-completions API.
-// Drives the 9-step agent-terminal lifecycle by parsing incoming request
-// history and emitting the next genuine Bash tool_call. A step only advances
-// after BOTH the assistant tool call and its validated tool result are seen;
-// read steps whose marker has not rendered yet are retried (bounded).
+// Drives the agent-terminal lifecycle by parsing incoming request history and
+// emitting the next genuine Bash tool_call. A step only advances after BOTH
+// the assistant tool call and its validated tool result are seen; read steps
+// whose marker has not rendered yet are retried (bounded).
+//
+// Modes (env):
+//   AGENT_TERMINAL_AGENT           pi (default) or omp — selects the scope
+//                                  probe steps (pi: `printenv PI_SESSION_ID`;
+//                                  omp: `printenv AGENT_TERMINAL_SCOPE` plus
+//                                  an explicit `AGENT_TERMINAL_SCOPE=shared`
+//                                  override probe).
+//   AGENT_TERMINAL_JOB_NAME        exact job name (replaces the legacy
+//                                  /prompt-smoke-\d+/ extraction).
+//   AGENT_TERMINAL_FIXTURE_HOLD=1  insert a sleep step right after start so
+//                                  the job stays alive mid-lifecycle (used by
+//                                  the two-session isolation gate).
+//   AGENT_TERMINAL_FIXTURE_HOLD_SECS  hold sleep duration (default 45).
+//   AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1  single-turn mode: answer
+//                                  SKILL_PROBE_OK/FAILED based on whether the
+//                                  skill description phrase is present in the
+//                                  request messages.
 //
 // pi sends message content as ARRAYS ([{type:"text",text:"..."}]) rather than
 // plain strings, so every content reader handles both forms. Responses are
@@ -44,154 +61,228 @@ type HistoryMessage = {
   tool_calls?: ToolCall[]
 } & ToolResult
 
-const SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
+const AGENT = process.env["AGENT_TERMINAL_AGENT"] === "omp" ? "omp" : "pi"
 
-const STEPS = [
-  {
-    // First Bash call: print the plugin-injected scope. Its result is raw
-    // text (the pi session id), not JSON; only non-empty is required here,
-    // the verifier asserts the exact session-id match.
-    probe: true as const,
-    cmd: (_job: string) => SCOPE_PROBE_COMMAND,
-    onResult: "scope-probe",
+// Exact job name override: replaces the legacy /prompt-smoke-\d+/ extraction
+// from the prompt text so the fixture can drive arbitrary job names (e.g.
+// `server` in the two-session isolation gate).
+const JOB_NAME_OVERRIDE = process.env["AGENT_TERMINAL_JOB_NAME"]?.trim() ?? ""
+
+// Hold mode: insert a sleep step right after `start` so the job stays alive
+// mid-lifecycle while a second session inspects it (two-session isolation
+// gate). The sleep result is intentionally not validated.
+const HOLD = process.env["AGENT_TERMINAL_FIXTURE_HOLD"] === "1"
+const HOLD_SECS = parseInt(process.env["AGENT_TERMINAL_FIXTURE_HOLD_SECS"] ?? "45", 10)
+
+// Skill-probe mode: single-turn fixture that answers SKILL_PROBE_OK when the
+// bundled skill's description phrase is present in the request messages, and
+// SKILL_PROBE_FAILED otherwise (skills stay enabled in that gate).
+const SKILL_PROBE = process.env["AGENT_TERMINAL_FIXTURE_SKILL_PROBE"] === "1"
+const SKILL_DESCRIPTION_PHRASE =
+  "Run persistent or interactive terminal jobs through a simple Zellij wrapper"
+
+type Step = {
+  cmd: (job: string) => string
+  onResult: string
+  probe?: boolean
+  probeValue?: string
+  hold?: boolean
+  check?: (body: Record<string, unknown>, job: string) => StepCheck
+}
+
+const stepList: Step = {
+  cmd: (_job: string) => "agent-terminal list",
+  onResult: "list",
+  check: (body: Record<string, unknown>): StepCheck => {
+    if (!Array.isArray(body["jobs"]))
+      return {
+        ok: false,
+        retry: false,
+        error: `jobs is not an array: ${JSON.stringify(body["jobs"])}`,
+      }
+    if (body["jobs"].length !== 0)
+      return {
+        ok: false,
+        retry: false,
+        error: `expected empty jobs, got ${JSON.stringify(body["jobs"])}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (_job: string) => `agent-terminal list`,
-    onResult: "list",
-    check: (body: Record<string, unknown>): StepCheck => {
-      if (!Array.isArray(body["jobs"]))
-        return {
-          ok: false,
-          retry: false,
-          error: `jobs is not an array: ${JSON.stringify(body["jobs"])}`,
-        }
-      if (body["jobs"].length !== 0)
-        return {
-          ok: false,
-          retry: false,
-          error: `expected empty jobs, got ${JSON.stringify(body["jobs"])}`,
-        }
-      return { ok: true }
-    },
+}
+
+const stepStart: Step = {
+  cmd: (job: string) =>
+    `agent-terminal start ${job} -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
+  onResult: "start",
+  check: (body: Record<string, unknown>, _job: string): StepCheck => {
+    if (body["state"] !== "running")
+      return {
+        ok: false,
+        retry: false,
+        error: `state != running: ${JSON.stringify(body["state"])}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (job: string) =>
-      `agent-terminal start ${job} -- /bin/bash -lc 'printf "prompt-ready\\n"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
-    onResult: "start",
-    check: (body: Record<string, unknown>, _job: string): StepCheck => {
-      if (body["state"] !== "running")
-        return {
-          ok: false,
-          retry: false,
-          error: `state != running: ${JSON.stringify(body["state"])}`,
-        }
-      return { ok: true }
-    },
+}
+
+const stepReadPrompt: Step = {
+  cmd: (job: string) => `agent-terminal read ${job}`,
+  onResult: "read-prompt",
+  check: (body: Record<string, unknown>, _job: string): StepCheck => {
+    if (typeof body["screen"] !== "string")
+      return {
+        ok: false,
+        retry: false,
+        error: `screen is not a string: ${JSON.stringify(body["screen"])}`,
+      }
+    if (!body["screen"].includes("prompt-ready"))
+      return {
+        ok: false,
+        retry: true,
+        error: `screen lacks prompt-ready (state=${JSON.stringify(body["state"])}): ${body["screen"].substring(0, 80)}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal read ${job}`,
-    onResult: "read-prompt",
-    check: (body: Record<string, unknown>, _job: string): StepCheck => {
-      if (typeof body["screen"] !== "string")
-        return {
-          ok: false,
-          retry: false,
-          error: `screen is not a string: ${JSON.stringify(body["screen"])}`,
-        }
-      if (!body["screen"].includes("prompt-ready"))
-        return {
-          ok: false,
-          retry: true,
-          error: `screen lacks prompt-ready (state=${JSON.stringify(body["state"])}): ${body["screen"].substring(0, 80)}`,
-        }
-      return { ok: true }
-    },
+}
+
+const stepSend: Step = {
+  cmd: (job: string) => `agent-terminal send ${job} -- hello-e2e`,
+  onResult: "send",
+  check: (_body: Record<string, unknown>, _job: string): StepCheck => {
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal send ${job} -- hello-e2e`,
-    onResult: "send",
-    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
-      return { ok: true }
-    },
+}
+
+const stepReadFirst: Step = {
+  cmd: (job: string) => `agent-terminal read ${job}`,
+  onResult: "read-first",
+  check: (body: Record<string, unknown>, _job: string): StepCheck => {
+    if (typeof body["screen"] !== "string")
+      return {
+        ok: false,
+        retry: false,
+        error: `screen is not a string: ${JSON.stringify(body["screen"])}`,
+      }
+    if (!body["screen"].includes("first:hello-e2e"))
+      return {
+        ok: false,
+        retry: true,
+        error: `screen lacks first:hello-e2e (state=${JSON.stringify(body["state"])}): ${body["screen"].substring(0, 80)}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal read ${job}`,
-    onResult: "read-first",
-    check: (body: Record<string, unknown>, _job: string): StepCheck => {
-      if (typeof body["screen"] !== "string")
-        return {
-          ok: false,
-          retry: false,
-          error: `screen is not a string: ${JSON.stringify(body["screen"])}`,
-        }
-      if (!body["screen"].includes("first:hello-e2e"))
-        return {
-          ok: false,
-          retry: true,
-          error: `screen lacks first:hello-e2e (state=${JSON.stringify(body["state"])}): ${body["screen"].substring(0, 80)}`,
-        }
-      return { ok: true }
-    },
+}
+
+const stepPress: Step = {
+  cmd: (job: string) => `agent-terminal press ${job} -- Enter`,
+  onResult: "press",
+  check: (_body: Record<string, unknown>, _job: string): StepCheck => {
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal press ${job} -- Enter`,
-    onResult: "press",
-    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
-      return { ok: true }
-    },
+}
+
+const stepReadSecond: Step = {
+  cmd: (job: string) => `agent-terminal read ${job}`,
+  onResult: "read-second",
+  check: (body: Record<string, unknown>, _job: string): StepCheck => {
+    if (body["state"] !== "exited")
+      return {
+        ok: false,
+        retry: true,
+        error: `state != exited: ${JSON.stringify(body["state"])}`,
+      }
+    if (body["exit_code"] !== 0)
+      return {
+        ok: false,
+        retry: false,
+        error: `exit_code != 0: ${JSON.stringify(body["exit_code"])}`,
+      }
+    if (typeof body["screen"] !== "string" || !body["screen"].includes("second:"))
+      return {
+        ok: false,
+        retry: false,
+        error: `screen lacks second: ${JSON.stringify(body["screen"])}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal read ${job}`,
-    onResult: "read-second",
-    check: (body: Record<string, unknown>, _job: string): StepCheck => {
-      if (body["state"] !== "exited")
-        return {
-          ok: false,
-          retry: true,
-          error: `state != exited: ${JSON.stringify(body["state"])}`,
-        }
-      if (body["exit_code"] !== 0)
-        return {
-          ok: false,
-          retry: false,
-          error: `exit_code != 0: ${JSON.stringify(body["exit_code"])}`,
-        }
-      if (typeof body["screen"] !== "string" || !body["screen"].includes("second:"))
-        return {
-          ok: false,
-          retry: false,
-          error: `screen lacks second: ${JSON.stringify(body["screen"])}`,
-        }
-      return { ok: true }
-    },
+}
+
+const stepStop: Step = {
+  cmd: (job: string) => `agent-terminal stop ${job}`,
+  onResult: "stop",
+  check: (_body: Record<string, unknown>, _job: string): StepCheck => {
+    return { ok: true }
   },
-  {
-    cmd: (job: string) => `agent-terminal stop ${job}`,
-    onResult: "stop",
-    check: (_body: Record<string, unknown>, _job: string): StepCheck => {
-      return { ok: true }
-    },
+}
+
+const stepListFinal: Step = {
+  cmd: (_job: string) => "agent-terminal list",
+  onResult: "list-final",
+  check: (body: Record<string, unknown>): StepCheck => {
+    if (!Array.isArray(body["jobs"]))
+      return {
+        ok: false,
+        retry: false,
+        error: `jobs is not an array: ${JSON.stringify(body["jobs"])}`,
+      }
+    if (body["jobs"].length !== 0)
+      return {
+        ok: false,
+        retry: false,
+        error: `expected empty jobs, got ${JSON.stringify(body["jobs"])}`,
+      }
+    return { ok: true }
   },
-  {
-    cmd: (_job: string) => `agent-terminal list`,
-    onResult: "list-final",
-    check: (body: Record<string, unknown>): StepCheck => {
-      if (!Array.isArray(body["jobs"]))
-        return {
-          ok: false,
-          retry: false,
-          error: `jobs is not an array: ${JSON.stringify(body["jobs"])}`,
-        }
-      if (body["jobs"].length !== 0)
-        return {
-          ok: false,
-          retry: false,
-          error: `expected empty jobs, got ${JSON.stringify(body["jobs"])}`,
-        }
-      return { ok: true }
-    },
-  },
-] as const
+}
+
+// The probe steps differ per agent: pi exposes the scope as the native
+// PI_SESSION_ID env var; omp receives an AGENT_TERMINAL_SCOPE injected into
+// the Bash tool env input, plus an explicit override probe proving an
+// explicit scope wins. The verifier asserts the exact printed values.
+function buildSteps(): Step[] {
+  const steps: Step[] = []
+  if (AGENT === "omp") {
+    steps.push(
+      {
+        probe: true,
+        cmd: (_job: string) => "printenv AGENT_TERMINAL_SCOPE",
+        onResult: "scope-probe",
+      },
+      {
+        probe: true,
+        probeValue: "shared",
+        cmd: (_job: string) => "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE",
+        onResult: "scope-probe-override",
+      },
+    )
+  } else {
+    steps.push({
+      probe: true,
+      cmd: (_job: string) => "printenv PI_SESSION_ID",
+      onResult: "scope-probe",
+    })
+  }
+  steps.push(stepList, stepStart)
+  if (HOLD) {
+    steps.push({
+      hold: true,
+      cmd: (_job: string) => `sleep ${HOLD_SECS}`,
+      onResult: "hold",
+    })
+  }
+  steps.push(
+    stepReadPrompt,
+    stepSend,
+    stepReadFirst,
+    stepPress,
+    stepReadSecond,
+    stepStop,
+    stepListFinal,
+  )
+  return steps
+}
+
+const STEPS: Step[] = buildSteps()
 
 // pi sends message content as an array of content parts
 // ([{type:"text",text:"..."}]) rather than a plain string. Normalize both
@@ -208,6 +299,7 @@ function contentToText(content: MessageContent): string | null {
 }
 
 function extractJobFromMessages(messages: Array<{ content: MessageContent }>): string | null {
+  if (JOB_NAME_OVERRIDE !== "") return JOB_NAME_OVERRIDE
   for (const m of messages) {
     const text = contentToText(m.content)
     if (text) {
@@ -269,17 +361,39 @@ function parseCommand(argumentsJson: string): string | null {
 }
 
 function validateStep(stepIdx: number, job: string, content: string | null): StepCheck {
-  if (content === null || content === "") {
-    return { ok: false, retry: false, error: `step ${stepIdx + 1}: empty tool result` }
-  }
   const step = STEPS[stepIdx]
   if (step === undefined) {
     return { ok: false, retry: false, error: `step ${stepIdx + 1}: unknown step index` }
   }
-  // The scope probe's result is raw text (the printed session id), not JSON.
-  if ("probe" in step) {
-    if (content.trim() === "")
-      return { ok: false, retry: false, error: "scope probe printed an empty AGENT_TERMINAL_SCOPE" }
+  // Hold steps (the two-session gate's sleep) are never validated: the sleep
+  // is a side-effect-free wall-clock pause whose output is irrelevant.
+  if (step.hold === true) {
+    return { ok: true }
+  }
+  if (content === null || content === "") {
+    return { ok: false, retry: false, error: `step ${stepIdx + 1}: empty tool result` }
+  }
+  // The scope probes' results are raw text (the printed value), not JSON.
+  if (step.probe === true) {
+    // omp's bash tool appends "\n\nWall time: X seconds..." (plus a
+    // "Command exited with code N" line) after the actual command output, so
+    // strip the same suffix e2e-verify.ts strips before comparing the probe's
+    // literal printed value.
+    const printed = content.replace(/\n\nWall time:.*$/s, "").trim()
+    if (printed === "") {
+      return {
+        ok: false,
+        retry: false,
+        error: `step ${stepIdx + 1}: probe printed an empty value`,
+      }
+    }
+    if (step.probeValue !== undefined && printed !== step.probeValue) {
+      return {
+        ok: false,
+        retry: false,
+        error: `step ${stepIdx + 1}: expected "${step.probeValue}", got "${printed}"`,
+      }
+    }
     return { ok: true }
   }
   const body = parseResultBody(content)
@@ -297,7 +411,11 @@ function validateStep(stepIdx: number, job: string, content: string | null): Ste
       error: `step ${stepIdx + 1}: status != ok: ${JSON.stringify(body)}`,
     }
   }
-  return step.check(body, job)
+  const check = step.check
+  if (check === undefined) {
+    return { ok: true }
+  }
+  return check(body, job)
 }
 
 function countCompletedSteps(messages: HistoryMessage[]): {
@@ -467,6 +585,26 @@ function buildErrorResponse(requestId: string, model: string, error: string): ob
   }
 }
 
+function buildSkillProbeResponse(requestId: string, model: string, ok: boolean): object {
+  return {
+    id: `chatcmpl-fixture-${requestId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: ok ? "SKILL_PROBE_OK" : "SKILL_PROBE_FAILED",
+        },
+        finish_reason: "stop" as const,
+      },
+    ],
+    usage: { completion_tokens: 5, prompt_tokens: 100, total_tokens: 105 },
+  }
+}
+
 function buildSuccessResponse(requestId: string, model: string): object {
   return {
     id: `chatcmpl-fixture-${requestId}`,
@@ -478,7 +616,7 @@ function buildSuccessResponse(requestId: string, model: string): object {
         index: 0,
         message: {
           role: "assistant",
-          content: "E2E_SUCCESS\nAll 9 agent-terminal lifecycle steps completed and verified.",
+          content: `E2E_SUCCESS\nAll ${STEPS.length} agent-terminal lifecycle steps completed and verified.`,
         },
         finish_reason: "stop" as const,
       },
@@ -599,6 +737,25 @@ const server = Bun.serve({
       `[fixture] request ${requestId}: stream=${streaming} msgs=${messages.length} last_role=${lastMsg?.role || "none"}`,
     )
 
+    // Skill-probe mode: no lifecycle is driven. The skill's description
+    // phrase must appear in the FIRST provider request's messages (skills
+    // surface as system/user context before any tool use). The agent under
+    // test must not call any tool in this mode, so this short-circuit runs
+    // before step extraction.
+    if (SKILL_PROBE) {
+      const messagesText = messages
+        .map((m) => contentToText(m.content))
+        .filter((t): t is string => t !== null)
+        .join("\n")
+      const ok = messagesText.includes(SKILL_DESCRIPTION_PHRASE)
+      console.error(
+        `[fixture] request ${requestId}: skill probe → ${ok ? "SKILL_PROBE_OK" : "SKILL_PROBE_FAILED"}`,
+      )
+      const response = buildSkillProbeResponse(requestId, model, ok)
+      if (streaming) return toSSEStreaming(response)
+      return Response.json(response)
+    }
+
     const job = extractJobFromMessages(messages)
     if (!job) {
       console.error(`[fixture] request ${requestId}: no job name`)
@@ -648,7 +805,12 @@ const server = Bun.serve({
   },
 })
 
-console.log(`Fixture listening on http://127.0.0.1:${PORT}`)
+// The harness allocates the port atomically: with `--port 0` the kernel
+// assigns an ephemeral port (server.port exposes it), so the fixture reports
+// the actual port as a machine-readable line the harness parses from the
+// fixture log. No free-port probing, no TOCTOU window.
+console.log(`FIXTURE_PORT=${server.port}`)
+console.log(`Fixture listening on http://127.0.0.1:${server.port}`)
 process.on("SIGINT", () => {
   server.stop()
   process.exit(0)

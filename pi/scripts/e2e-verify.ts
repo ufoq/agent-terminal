@@ -123,16 +123,33 @@ function containsAgentTerminalToken(command: string): boolean {
   return /(?:^|[\s'"])agent-terminal\b/.test(command)
 }
 
-// The scope probe is the first Bash call in the deterministic gate. It proves
-// the extension's spawnHook set AGENT_TERMINAL_SCOPE to the pi session id
-// (which the model does not supply), by printing it back into the tool
-// result. The factory-time process.env.PATH mutation alone could expose the
-// binary while scope silently fell back to "standalone", so this probe (and
-// its exact-match check) is what actually guards cross-agent isolation.
-const SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
+export type AgentKind = "pi" | "omp"
 
-function isScopeProbeCommand(command: string | undefined): boolean {
-  return command?.trim() === SCOPE_PROBE_COMMAND
+// The scope probes are the first Bash calls in the deterministic gate. They
+// prove the extension exposed the per-session scope to the Bash tool, by
+// printing it back into the tool result. pi's adapter injects nothing: the
+// scope IS the native PI_SESSION_ID the agent already exports. omp's adapter
+// injects AGENT_TERMINAL_SCOPE (session id) plus PATH into the Bash tool's
+// env input, and the explicit `AGENT_TERMINAL_SCOPE=shared` override probe
+// proves an explicitly requested scope wins over the injected default. The
+// exact-match checks below are what actually guard cross-agent isolation.
+const PI_PROBE_COMMAND = "printenv PI_SESSION_ID"
+const OMP_SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
+const OMP_SCOPE_OVERRIDE_PROBE_COMMAND = "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE"
+
+type AgentProbe = {
+  readonly command: string
+  // "session" probes must print exactly the transcript session header id;
+  // "shared" is a literal expected value.
+  readonly expected: "session" | "shared"
+}
+
+const AGENT_PROBES: Readonly<Record<AgentKind, readonly AgentProbe[]>> = {
+  pi: [{ command: PI_PROBE_COMMAND, expected: "session" }],
+  omp: [
+    { command: OMP_SCOPE_PROBE_COMMAND, expected: "session" },
+    { command: OMP_SCOPE_OVERRIDE_PROBE_COMMAND, expected: "shared" },
+  ],
 }
 
 function parseAgentTerminalCommand(command: string | undefined): ParsedAgentCommand {
@@ -222,8 +239,10 @@ export function verifyE2E(
   jobName: string,
   mode: VerifyMode = "strict",
   expectedWorkdir?: string,
+  agent: AgentKind = "pi",
 ): Result {
   const events = parseTranscript(path)
+  const probes = AGENT_PROBES[agent]
 
   // Strict mode rejects error events (auto_retry_start, or any event carrying
   // an errorMessage) because the deterministic gate must complete without
@@ -243,9 +262,10 @@ export function verifyE2E(
     }
   }
 
-  // The first line of pi's `--mode json` stream is the session header, whose
-  // `id` is the value the extension's spawnHook must have injected as
-  // AGENT_TERMINAL_SCOPE.
+  // The first line of the agent's `--mode json` stream is the session header,
+  // whose `id` is what the probes must print back: for pi it is the native
+  // PI_SESSION_ID, for omp the AGENT_TERMINAL_SCOPE the adapter injects into
+  // the Bash tool env input.
   const header = events[0]
   if (header === undefined || header.type !== "session") {
     return { ok: false, error: "transcript does not start with a session header line" }
@@ -256,7 +276,7 @@ export function verifyE2E(
   }
 
   const toolEvents: ToolExecution[] = []
-  let scopeProbe: ToolExecution | undefined
+  let probeIndex = 0
   const pendingBash = new Map<
     string,
     { readonly index: number; readonly command: string; readonly workdir?: string }
@@ -315,17 +335,35 @@ export function verifyE2E(
         output: extractToolOutput(ev.result),
         ...(start.workdir === undefined ? {} : { workdir: start.workdir }),
       }
-      if (isScopeProbeCommand(execution.command)) {
-        if (scopeProbe !== undefined) {
-          return { ok: false, error: "the scope probe Bash call appeared more than once" }
-        }
+      // The probes must be the FIRST Bash calls, in order, before any
+      // lifecycle call. Each probe requires an empty lifecycle history so a
+      // mis-ordered probe cannot be masked by retried lifecycle calls.
+      const probe = probes[probeIndex]
+      if (probe !== undefined && probe.command === execution.command.trim()) {
         if (toolEvents.length !== 0) {
           return {
             ok: false,
-            error: `the scope probe must be the first Bash call, but a lifecycle call preceded it: ${toolEvents[0]?.command ?? ""}`,
+            error: `probe "${probe.command}" must be the first Bash call, but a lifecycle call preceded it: ${toolEvents[0]?.command ?? ""}`,
           }
         }
-        scopeProbe = execution
+        if (probe.expected === "session") {
+          const printed = execution.output.replace(/\n\nWall time:.*$/s, "").trim()
+          if (printed !== sessionId) {
+            return {
+              ok: false,
+              error: `probe "${probe.command}" printed "${printed}", expected the session id "${sessionId}"`,
+            }
+          }
+        } else {
+          const printed = execution.output.replace(/\n\nWall time:.*$/s, "").trim()
+          if (printed !== "shared") {
+            return {
+              ok: false,
+              error: `probe "${probe.command}" printed "${printed}", expected "shared"`,
+            }
+          }
+        }
+        probeIndex++
         continue
       }
       const workdir = execution.workdir
@@ -365,23 +403,18 @@ export function verifyE2E(
     return { ok: false, error: "no completed Bash agent-terminal tool calls found" }
   }
 
-  // The scope probe must be present, and its printed value must exactly match
-  // the transcript's pi session id in BOTH modes. The session id and the
-  // extension's env propagation are pi-owned, not model-dependent, so a
-  // missing/empty/"standalone"/mismatched scope fails the real-model path
-  // just as it fails the deterministic gate.
-  if (scopeProbe === undefined) {
+  // Every probe must be present and validated in order. The probes and the
+  // extension's env propagation are agent-owned, not model-dependent, so a
+  // missing/empty/mismatched probe fails the real-model path just as it fails
+  // the deterministic gate.
+  if (probeIndex < probes.length) {
+    const missing = probes
+      .slice(probeIndex)
+      .map((p) => p.command)
+      .join(", ")
     return {
       ok: false,
-      error: "the scope probe Bash call (printenv AGENT_TERMINAL_SCOPE) is missing",
-    }
-  }
-  // omp's bash tool appends "\n\nWall time: X seconds" after the actual output.
-  const printed = scopeProbe.output.replace(/\n\nWall time:.*$/s, "").trim()
-  if (printed !== sessionId) {
-    return {
-      ok: false,
-      error: `AGENT_TERMINAL_SCOPE (${printed}) does not match the pi session id (${sessionId})`,
+      error: `missing scope probe Bash call(s): ${missing}`,
     }
   }
 
@@ -612,6 +645,7 @@ export function main(): void {
   let jobName = ""
   let mode: VerifyMode = "strict"
   let expectedWorkdir: string | undefined
+  let agent: AgentKind = "pi"
   for (let i = 0; i < args.length; i++) {
     const argument = args[i]
     if (argument === undefined) continue
@@ -626,16 +660,22 @@ export function main(): void {
       i++
       continue
     }
+    if (argument === "--agent" && i + 1 < args.length) {
+      const v = args[i + 1]
+      agent = v === "omp" ? "omp" : "pi"
+      i++
+      continue
+    }
     if (!path) path = argument
     else if (!jobName) jobName = argument
   }
   if (!path || !jobName) {
     console.error(
-      "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path]",
+      "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path] [--agent pi|omp]",
     )
     process.exit(2)
   }
-  const result = verifyE2E(path, jobName, mode, expectedWorkdir)
+  const result = verifyE2E(path, jobName, mode, expectedWorkdir, agent)
   if (!result.ok) {
     console.error(`e2e verification failed: ${result.error}`)
     process.exit(1)

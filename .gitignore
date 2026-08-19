@@ -15,6 +15,14 @@
 /pi/npm/packages/*/bin/
 /pi/npm/packages/*/skills/
 /pi/npm/packages/*/*.tgz
+/omp/node_modules/
+/omp/.tsbuildinfo
+/omp/coverage/
+/omp/npm/dist/
+/omp/npm/packages/*/dist/
+/omp/npm/packages/*/bin/
+/omp/npm/packages/*/skills/
+/omp/npm/packages/*/*.tgz
 /.omo/
 /.*
 !.github/
