@@ -1,6 +1,6 @@
 {
   "name": "@ufoq/omp-agent-terminal-bundle-zellij",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "omp coding agent extension that bundles the Linux x86_64 agent-terminal CLI, skill, and a pinned Zellij binary",
   "type": "module",
   "license": "MIT",

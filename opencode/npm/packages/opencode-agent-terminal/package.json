@@ -1,6 +1,6 @@
 {
   "name": "@ufoq/opencode-agent-terminal",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "OpenCode plugin that bundles the Linux x86_64 agent-terminal CLI and skill",
   "type": "module",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "@ufoq/opencode-agent-terminal-bundle-zellij",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "OpenCode plugin that bundles the Linux x86_64 agent-terminal CLI, skill, and a pinned Zellij binary",
   "type": "module",
   "license": "MIT",
