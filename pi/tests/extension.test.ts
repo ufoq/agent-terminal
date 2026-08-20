@@ -99,6 +99,15 @@ type PiManifest = {
   }
 }
 
+type ReleaseManifest = {
+  readonly version: string
+}
+
+type PackageNameVersionManifest = {
+  readonly name: string
+  readonly version: string
+}
+
 function loadExtension(api: FakeApi, input: CreateExtensionTestInput): void {
   createExtension(input)(api as unknown as ExtensionAPI)
 }
@@ -279,6 +288,74 @@ describe("pi agent-terminal extension", () => {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PiManifest
       expect(manifest.pi.extensions).toEqual(["./dist/index.js"])
       expect(manifest.pi.skills).toEqual(["./skills"])
+    }
+  })
+
+  it("keeps every package manifest name and version aligned with the canonical release version", () => {
+    const testDir = dirname(fileURLToPath(import.meta.url))
+    const repoRoot = join(testDir, "..", "..")
+    const release = JSON.parse(
+      readFileSync(join(repoRoot, "release.json"), "utf8"),
+    ) as ReleaseManifest
+    const packages: readonly { readonly path: string; readonly name: string }[] = [
+      {
+        path: join(repoRoot, "pi", "npm", "packages", "pi-agent-terminal", "package.json"),
+        name: "@ufoq/pi-agent-terminal",
+      },
+      {
+        path: join(
+          repoRoot,
+          "pi",
+          "npm",
+          "packages",
+          "pi-agent-terminal-bundle-zellij",
+          "package.json",
+        ),
+        name: "@ufoq/pi-agent-terminal-bundle-zellij",
+      },
+      {
+        path: join(repoRoot, "omp", "npm", "packages", "omp-agent-terminal", "package.json"),
+        name: "@ufoq/omp-agent-terminal",
+      },
+      {
+        path: join(
+          repoRoot,
+          "omp",
+          "npm",
+          "packages",
+          "omp-agent-terminal-bundle-zellij",
+          "package.json",
+        ),
+        name: "@ufoq/omp-agent-terminal-bundle-zellij",
+      },
+      {
+        path: join(
+          repoRoot,
+          "opencode",
+          "npm",
+          "packages",
+          "opencode-agent-terminal",
+          "package.json",
+        ),
+        name: "@ufoq/opencode-agent-terminal",
+      },
+      {
+        path: join(
+          repoRoot,
+          "opencode",
+          "npm",
+          "packages",
+          "opencode-agent-terminal-bundle-zellij",
+          "package.json",
+        ),
+        name: "@ufoq/opencode-agent-terminal-bundle-zellij",
+      },
+    ]
+    expect(typeof release.version).toBe("string")
+    for (const { path, name } of packages) {
+      const manifest = JSON.parse(readFileSync(path, "utf8")) as PackageNameVersionManifest
+      expect(manifest.name).toBe(name)
+      expect(manifest.version).toBe(release.version)
     }
   })
 })

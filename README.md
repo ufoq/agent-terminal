@@ -520,6 +520,82 @@ Environment variables:
 - `AGENT_TERMINAL_PROMPT_E2E_TIMEOUT` — model run timeout in seconds (default `900`).
 - `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI` — set to `1` to permit execution under CI.
 
+## Releasing
+
+`release.json` at the repository root is the single source of truth for the npm release
+version:
+
+```json
+{ "version": "0.1.5" }
+```
+
+`scripts/release-version.mjs` (zero-dependency Node) keeps that file and the six npm
+manifests in lockstep. Manifests retain their literal version strings for npm; nothing is
+derived at pack time. The managed packages are `@ufoq/pi-agent-terminal`,
+`@ufoq/pi-agent-terminal-bundle-zellij`, `@ufoq/omp-agent-terminal`,
+`@ufoq/omp-agent-terminal-bundle-zellij`, `@ufoq/opencode-agent-terminal`, and
+`@ufoq/opencode-agent-terminal-bundle-zellij`, with manifests at
+`pi/npm/packages/*/package.json`, `omp/npm/packages/*/package.json`, and
+`opencode/npm/packages/*/package.json` respectively.
+
+Validate the current state:
+
+```bash
+node scripts/release-version.mjs check
+```
+
+Cut a release from the repository root in this exact order:
+
+1. `node scripts/release-version.mjs sync <version>` — writes `release.json` and the six
+   manifests to `<version>`.
+2. `node scripts/release-version.mjs check` — re-validates the synchronized state.
+3. Commit the synchronized change.
+4. Create the `v<version>` tag **after** that commit — the tag must point at the
+   synchronized commit.
+5. Build and pack. Each host workspace builds both of its packages with Bun, then all
+   six package directories are packed into a temporary artifact directory:
+
+   ```bash
+   cd pi
+   bun run build
+   cd ../omp
+   bun run build
+   cd ../opencode
+   bun run build
+   cd ..
+
+   ARTIFACT_DIR="$(mktemp -d /tmp/agent-terminal-tarballs.XXXXXX)"
+
+   pack_into() {
+     local dir="$1" pkg="$2" out
+     out="$(cd "$pkg" && bun pm pack --destination "$dir" --quiet)" || return 1
+     printf '%s/%s\n' "$dir" "${out##*/}"
+   }
+
+   PI_SLIM_TARBALL="$(pack_into "$ARTIFACT_DIR" pi/npm/packages/pi-agent-terminal)"
+   PI_BUNDLE_TARBALL="$(pack_into "$ARTIFACT_DIR" pi/npm/packages/pi-agent-terminal-bundle-zellij)"
+   OMP_SLIM_TARBALL="$(pack_into "$ARTIFACT_DIR" omp/npm/packages/omp-agent-terminal)"
+   OMP_BUNDLE_TARBALL="$(pack_into "$ARTIFACT_DIR" omp/npm/packages/omp-agent-terminal-bundle-zellij)"
+   OPENCODE_SLIM_TARBALL="$(pack_into "$ARTIFACT_DIR" opencode/npm/packages/opencode-agent-terminal)"
+   OPENCODE_BUNDLE_TARBALL="$(pack_into "$ARTIFACT_DIR" opencode/npm/packages/opencode-agent-terminal-bundle-zellij)"
+   ```
+
+   Each variable resolves to `$ARTIFACT_DIR/<basename>` of the tarball Bun emits; the
+   `${out##*/}` normalization keeps that path correct whether `bun pm pack` prints a bare
+   filename or a destination-qualified path.
+6. Publish those exact tarballs with generic `npm publish`:
+
+   ```bash
+   npm publish "$PI_SLIM_TARBALL" --access public
+   npm publish "$PI_BUNDLE_TARBALL" --access public
+   npm publish "$OMP_SLIM_TARBALL" --access public
+   npm publish "$OMP_BUNDLE_TARBALL" --access public
+   npm publish "$OPENCODE_SLIM_TARBALL" --access public
+   npm publish "$OPENCODE_BUNDLE_TARBALL" --access public
+   ```
+
+   Delete `$ARTIFACT_DIR` after the publish completes.
+
 ## Development
 
 Rust quality gate:

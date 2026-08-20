@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "node npm/scripts/build.mjs",
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run build && bun test",
+    "version:check": "node ../scripts/release-version.mjs check",
+    "check": "bun run version:check && bun run format:check && bun run lint && bun run typecheck && bun run build && bun test",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
