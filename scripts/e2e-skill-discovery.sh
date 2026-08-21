@@ -99,7 +99,7 @@ trap 'exit 129' HUP
 # by the bundled package (bin/zellij) and is not exercised by this gate
 # (skills are discovered at session start; no tool runs).
 missing=()
-for tool in bun curl python3; do
+for tool in bun curl; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     missing+=("$tool")
   fi

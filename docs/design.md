@@ -305,12 +305,13 @@ per-host workspace scripts over the shared build library `scripts/npm-build-lib.
 
 Pi packages declare their extension entry point and skill directory in the `pi` manifest
 field (`"pi": { "extensions": ["./dist/index.js"], "skills": ["./skills"] }`), which
-pi honors. OMP packages declare only their extension entry point; omp's native
-`omp-plugins` provider discovers the shipped `skills/` sibling when the package root
-loads. Pi packages load via pi's `-e` flag or auto-discovery from
-`~/.pi/agent/extensions/`; omp packages via omp's `-e` flag or auto-discovery from
-`~/.omp/agent/extensions/`. The Rust CLI, skill content, bundled binaries, and JSON
-protocol are unchanged and shared between hosts.
+pi honors when the package is loaded through `pi install npm:@ufoq/...` (or
+project-local `pi install -l`) or for a one-shot run through `pi -e npm:@ufoq/...`.
+Pi's `~/.pi/agent/extensions/` auto-load directory is extension-only and does not read
+package `pi.skills` metadata. OMP packages declare only their extension entry point;
+omp's native `omp-plugins` provider discovers the shipped `skills/` sibling when the
+package root loads. The Rust CLI, skill content, bundled binaries, and JSON protocol are
+unchanged and shared between hosts.
 
 The build pipeline compiles the Rust binary once (`x86_64-unknown-linux-musl`), compiles
 the per-host adapter with `bun build`, and copies the binary, the dist, and the skill into

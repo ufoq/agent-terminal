@@ -371,7 +371,8 @@ export AGENT_TERMINAL_AGENT
 # defaults to prompt-smoke-$RUN_ID otherwise).
 export AGENT_TERMINAL_JOB_NAME="${AGENT_TERMINAL_JOB_NAME:-}"
 export AGENT_TERMINAL_AGENT_BIN="$AGENT_BIN"
-export AGENT_TERMINAL_EXTENSION="$EXTENSION_PATH"
+# Load the package root so Pi reads the package's static `pi.skills` metadata.
+export AGENT_TERMINAL_EXTENSION="$BUNDLE_PACKAGE"
 export AGENT_TERMINAL_PI_CONFIG_DIR="$SANDBOX_PI_DIR"
 export AGENT_TERMINAL_VERIFY_MODE="real"
 export AGENT_TERMINAL_SKIP_PREFLIGHT=1

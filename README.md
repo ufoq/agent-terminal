@@ -144,10 +144,12 @@ the usage note below).
 Each package ships a per-host adapter extension plus the bundled binary and skill. Pi
 manifests declare both resources (`"pi": { "extensions": ["./dist/index.js"], "skills":
 ["./skills"] }`); OMP manifests declare only the extension entry point, and omp's native
-`omp-plugins` provider discovers the shipped `skills/` sibling when the package root
-loads. The pi packages are loaded via pi's `-e` flag or auto-discovered from
-`~/.pi/agent/extensions/`; the omp packages via omp's `-e` flag or auto-discovered from
-`~/.omp/agent/extensions/`.
+`omp-plugins` provider discovers the shipped `skills/` sibling when the package root loads.
+The pi packages must be loaded as pi packages: persist them with `pi install
+npm:@ufoq/pi-agent-terminal` (append `-l` for project-local settings), or load them for one
+run with `pi -e npm:@ufoq/pi-agent-terminal`. Pi's extension auto-load directory is
+extension-only and does not read the package's `pi.skills` metadata. The omp packages load
+via omp's `-e` flag or auto-discovery from `~/.omp/agent/extensions/`.
 
 ### pi adapter
 

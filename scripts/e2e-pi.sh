@@ -160,8 +160,13 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   fi
   if [[ -z ${AGENT_TERMINAL_EXTENSION:-} ]]; then
     missing+=("AGENT_TERMINAL_EXTENSION")
+  elif [[ $AGENT_TERMINAL_VERIFY_MODE == real ]]; then
+    if [[ ! -d $AGENT_TERMINAL_EXTENSION ]]; then
+      printf 'error: AGENT_TERMINAL_EXTENSION must be a package root in real mode: %s\n' "$AGENT_TERMINAL_EXTENSION" >&2
+      exit 1
+    fi
   elif [[ ! -f $AGENT_TERMINAL_EXTENSION ]]; then
-    printf 'error: AGENT_TERMINAL_EXTENSION points to a missing file: %s\n' "$AGENT_TERMINAL_EXTENSION" >&2
+    printf 'error: AGENT_TERMINAL_EXTENSION points to a missing extension file: %s\n' "$AGENT_TERMINAL_EXTENSION" >&2
     exit 1
   fi
   # The provider extension only exists in strict (fixture) mode; real mode
@@ -431,7 +436,7 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
     if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_TERMINAL_AGENT_BIN" \
       -p --mode json --provider "$PI_MODEL_PROVIDER" --model "$PI_MODEL_ID" \
       -e "$AGENT_TERMINAL_EXTENSION" \
-      --no-skills --no-context-files --no-lsp --no-session --thinking off \
+      --no-context-files --no-lsp --no-session --thinking off \
       --cwd "$WORKDIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")" \
       >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
       cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2

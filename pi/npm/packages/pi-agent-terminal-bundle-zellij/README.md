@@ -11,15 +11,15 @@ pinned Zellij 0.44.3 binary.
 ## Install
 
 ```sh
-npm install @ufoq/pi-agent-terminal-bundle-zellij
+# Persist globally; use `-l` for project-local .pi/settings.json.
+pi install npm:@ufoq/pi-agent-terminal-bundle-zellij
+
+# Or load temporarily for one run.
+pi -e npm:@ufoq/pi-agent-terminal-bundle-zellij
 ```
 
-## Usage
-
-Install the package and load it as a package source in pi (for example with
-`-e <package root>` or an `npm:` reference). The package manifest declares both
-the extension and the bundled skill, so pi discovers the skill statically from
-the package metadata — no runtime skill registration is involved.
+Pi reads both the extension and bundled skill from the package manifest, so the skill is
+discovered statically from `pi.skills` — no runtime skill registration is involved.
 
 The extension itself is responsible for PATH setup and compatibility flags:
 
