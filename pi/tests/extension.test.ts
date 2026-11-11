@@ -328,28 +328,6 @@ describe("pi agent-terminal extension", () => {
         ),
         name: "@ufoq/omp-agent-terminal-bundle-zellij",
       },
-      {
-        path: join(
-          repoRoot,
-          "opencode",
-          "npm",
-          "packages",
-          "opencode-agent-terminal",
-          "package.json",
-        ),
-        name: "@ufoq/opencode-agent-terminal",
-      },
-      {
-        path: join(
-          repoRoot,
-          "opencode",
-          "npm",
-          "packages",
-          "opencode-agent-terminal-bundle-zellij",
-          "package.json",
-        ),
-        name: "@ufoq/opencode-agent-terminal-bundle-zellij",
-      },
     ]
     expect(typeof release.version).toBe("string")
     for (const { path, name } of packages) {

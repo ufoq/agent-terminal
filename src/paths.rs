@@ -128,10 +128,9 @@ pub fn project_digest(project_root: &Path) -> String {
 
 /// Environment variable that selects the agent scope.
 ///
-/// When absent, the CLI falls back to [`PI_SESSION_ID_ENV`] (pi/omp's native
+/// When absent, the CLI falls back to [`PI_SESSION_ID_ENV`] (pi's native
 /// per-session identity) and then to the stable literal scope `standalone` so
-/// direct users keep persistent state across invocations. `OpenCode` injects a
-/// stable per-session identity (the session id) through this variable.
+/// direct users keep persistent state across invocations.
 pub const SCOPE_ENV: &str = "AGENT_TERMINAL_SCOPE";
 
 /// Environment variable pi (and omp, which is pi-based) injects into bash

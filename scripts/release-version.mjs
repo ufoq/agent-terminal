@@ -2,7 +2,7 @@
 // Single-source npm release version management for agent-terminal.
 //
 // Canonical state lives in the repository-root `release.json`, which contains
-// exactly one field: `version`. This CLI keeps that file and the six published
+// exactly one field: `version`. This CLI keeps that file and the published
 // npm package manifests in lockstep, and refuses to touch anything else.
 //
 // Commands:
@@ -10,7 +10,7 @@
 //                  Read-only: never writes, exits nonzero on any mismatch.
 //   sync <version> Preflight every source input (readable JSON object with
 //                  the expected manifest name), then write release.json and
-//                  the six allowlisted manifests to <version> and run the
+//                  the allowlisted manifests to <version> and run the
 //                  same validation. Aborts without writing if preflight fails.
 //
 // All paths are derived from this file's location (import.meta.url), never the
@@ -42,14 +42,6 @@ const MANIFESTS = [
   {
     relPath: "omp/npm/packages/omp-agent-terminal-bundle-zellij/package.json",
     name: "@ufoq/omp-agent-terminal-bundle-zellij",
-  },
-  {
-    relPath: "opencode/npm/packages/opencode-agent-terminal/package.json",
-    name: "@ufoq/opencode-agent-terminal",
-  },
-  {
-    relPath: "opencode/npm/packages/opencode-agent-terminal-bundle-zellij/package.json",
-    name: "@ufoq/opencode-agent-terminal-bundle-zellij",
   },
 ]
 

@@ -1,6 +1,6 @@
 # agent-terminal design
 
-Status: Rust CLI implemented; OpenCode skill is CLI-oriented (invokes the binary through Bash).
+Status: Rust CLI implemented; pi/omp skill is CLI-oriented (invokes the binary through Bash).
 
 ## 1. Product rule
 
@@ -202,7 +202,7 @@ State mutations use two internal phases that are never exposed as job states:
 - `pending_start` is durable before session/pane creation. Reconciliation adopts only a non-plugin pane whose session, terminal ID, and nonce-bearing title all match. Authoritative disappearance after a pane identity was acquired cleans the record and surfaces `job_not_found`. If no pane identity appears by the adoption deadline, return `zellij_failed` and retain `pending_start` for later reconciliation or `stop`.
 - `pending_remove` is durable before pane closure. Reconciliation retries closure when the owned pane remains. For the last job, the phase stays durable until both the job pane and the owned keeper-only session are absent; session-deletion failure returns `zellij_failed` and preserves the phase. Only then does reconciliation remove the job entry and clear the phase.
 
-This ordering keeps a pane created during an interrupted controller process or cancelled OpenCode call reconcilable by its durable nonce. State is written before the session exists, so missing or corrupt state never authorizes targeting a pre-existing session.
+This ordering keeps a pane created during an interrupted controller process or cancelled agent call reconcilable by its durable nonce. State is written before the session exists, so missing or corrupt state never authorizes targeting a pre-existing session.
 
 The controller supplies a minimal private Zellij config and layout so headless startup does not depend on user configuration. It bootstraps with `attach --create-background` and a keeper pane titled with the ownership nonce, then polls within the ten-second startup deadline until that pane is visible before creating a job. Plugin panes are always ignored because Zellij can retain a hidden plugin with the same numeric ID as a terminal pane. Last-job cleanup deletes the owned session inside `pending_remove` before state is cleared.
 
@@ -276,7 +276,7 @@ The main borrowed pattern is Claude Code's split between background start, outpu
 
 ## 12. Cross-agent scoping
 
-The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. By default the plugin sets it to the OpenCode session id (never the model). The variable is optional and overridable: agents that need to share terminal state — for example a parent and a subagent working on the same task — each set it to the same task-specific value (such as `20260803-fix-auth-refactor`) so they land in one intended scope without coupling to any specific session. The plugin honors an explicit value unchanged and only auto-injects the session id when the variable is unset.
+The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. The pi adapter does not inject it; pi's native `PI_SESSION_ID` is the default. The omp adapter sets it to the omp session id. The variable is optional and overridable: agents that need to share terminal state — for example a parent and a subagent working on the same task — each set it to the same task-specific value (such as `20260803-fix-auth-refactor`) so they land in one intended scope without coupling to any specific session. The plugin honors an explicit value unchanged and only auto-injects the session id when the variable is unset.
 
 State is stored under a scoped directory tree:
 
@@ -284,7 +284,7 @@ State is stored under a scoped directory tree:
 <state-root>/scopes/<scope-digest>/projects/<project-digest>/
 ```
 
-Each scope also gets a private Zellij socket namespace under `<tmp>/agent-terminal-<scope-digest>`. Concurrent agents running in separate OpenCode sessions never see each other's jobs, even when they operate on the same project root. Session identity, pane ownership, and locks are all contained within one scope.
+Each scope also gets a private Zellij socket namespace under `<tmp>/agent-terminal-<scope-digest>`. Concurrent agents running in separate agent sessions never see each other's jobs, even when they operate on the same project root. Session identity, pane ownership, and locks are all contained within one scope.
 
 When `AGENT_TERMINAL_SCOPE` is unset, the CLI falls back to `PI_SESSION_ID` (pi's native per-session identity) and only then to the literal scope `standalone`. `standalone` is the default when running the binary directly outside of an agent session. Note that omp does not expose `PI_SESSION_ID` to bash commands, so under omp the extension is required for per-session isolation; without it, omp sessions share the `standalone` scope.
 
@@ -315,8 +315,7 @@ unchanged and shared between hosts.
 
 The build pipeline compiles the Rust binary once (`x86_64-unknown-linux-musl`), compiles
 the per-host adapter with `bun build`, and copies the binary, the dist, and the skill into
-each package. The skill is shared with the OpenCode integration:
-`opencode/skills/` is the single source of truth and is copied verbatim by
+each package. The skill lives at `pi/skills/` and is copied verbatim by
 `copySkillToPackage`. The bundle variant's Zellij binary is content-pinned by SHA-256 and
 cached under `~/.cache/agent-terminal-zellij` for offline rebuilds; both bundle
 entrypoints `await` `ensureZellij` before finishing, so success is never reported before
@@ -406,9 +405,9 @@ registers no skill handler.
 
 ### e2e gates
 
-`scripts/e2e-pi-local.sh` is the deterministic release gate for the per-agent integration,
-mirroring `scripts/e2e-opencode-local.sh`. `AGENT_TERMINAL_AGENT=pi|omp` selects the agent
-under test, its package (`pi/npm/packages/pi-agent-terminal-bundle-zellij` or
+`scripts/e2e-pi-local.sh` is the deterministic release gate for the per-agent integration.
+`AGENT_TERMINAL_AGENT=pi|omp` selects the agent under test, its package
+(`pi/npm/packages/pi-agent-terminal-bundle-zellij` or
 `omp/npm/packages/omp-agent-terminal-bundle-zellij`), its workspace build, and its probes:
 
 - pi: `printenv PI_SESSION_ID`, asserted equal to the session header id.
@@ -445,9 +444,9 @@ there. This proves real-host static skill discovery end to end on both hosts: di
 reaches the model request as skill metadata.
 
 In addition to the deterministic gates, `scripts/e2e-pi-real.sh` is an **optional,
-local-only** real-model e2e mirroring `scripts/e2e-opencode-real.sh`: it is not a release
-gate, and it drives the same lifecycle through the real pi/omp binary with a real model
-from the user's own pi config, loading the per-agent package. It projects only the selected
+local-only** real-model e2e: it is not a release gate, and it drives the same lifecycle
+through the real pi/omp binary with a real model from the user's own pi config, loading
+the per-agent package. It projects only the selected
 provider's model config (`models.json` for pi, `models.yml` for omp) and `auth.json` entries
 plus a minimal `settings.json` into a sandbox config directory (`PI_CODING_AGENT_DIR`),
 which is always deleted on exit, and runs the shared harness with

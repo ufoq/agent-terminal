@@ -221,8 +221,7 @@ fi
 # auto mode), so it is defined only now that FIXTURE_PORT is final.
 readonly BASE_URL="http://127.0.0.1:$FIXTURE_PORT/v1"
 
-# pi/omp do not read a config file for custom providers (unlike opencode's
-# opencode.json). The fixture provider is registered by a small extension file
+# pi/omp do not read a config file for custom providers. The fixture provider is registered by a small extension file
 # that the agent loads with -e alongside the agent-terminal extension.
 PROVIDER_EXTENSION="$RUN_DIR/provider.ts"
 cat >"$PROVIDER_EXTENSION" <<EOF

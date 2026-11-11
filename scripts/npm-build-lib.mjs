@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Shared build helpers for the agent-terminal npm packages (pi and omp).
+// Shared build helpers for the agent-terminal npm packages.
 //
-// The Zellij version + SHA-256 pins live here and ONLY here. Both the pi and
-// omp build entrypoints import this library so the pinned binary is verified
+// The Zellij version + SHA-256 pins live here and ONLY here. Every package
+// build entrypoint imports this library so the pinned binary is verified
 // identically everywhere.
 //
 // The library assumes the repository root is one level above its own directory
 // (`scripts/`), so `buildAgentTerminalBinary()` can run cargo from the root and
-// `copySkillToPackage()` can copy the single source `opencode/skills`.
+// `copySkillToPackage()` can copy the single source `pi/skills`.
 
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
@@ -84,9 +84,7 @@ export function copyBinaryToPackage(targetBin, packageRoot) {
 }
 
 export function copySkillToPackage(packageRoot) {
-  // The skill is shared with the opencode integration (same SKILL.md content),
-  // so copy it straight from opencode/skills instead of duplicating it.
-  const source = join(repoRoot, "opencode", "skills")
+  const source = join(repoRoot, "pi", "skills")
   const dest = join(packageRoot, "skills")
   rmSync(dest, { recursive: true, force: true })
   cpSync(source, dest, { recursive: true })
