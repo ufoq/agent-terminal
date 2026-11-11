@@ -21,8 +21,7 @@ HOST_PATH="$ORIG_PATH"
 AGENT_TERMINAL_RUN_PREFIX="${AGENT_TERMINAL_RUN_PREFIX:-e2e}"
 AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}"
 AGENT_TERMINAL_ENABLE_PROMPT_E2E="${AGENT_TERMINAL_ENABLE_PROMPT_E2E:-1}"
-AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
-AGENT_TERMINAL_AGENT_BIN="${AGENT_TERMINAL_AGENT_BIN:-}"
+AGENT_TERMINAL_PI_BIN="${AGENT_TERMINAL_PI_BIN:-}"
 AGENT_TERMINAL_EXTENSION="${AGENT_TERMINAL_EXTENSION:-}"
 AGENT_TERMINAL_PROVIDER_EXTENSION="${AGENT_TERMINAL_PROVIDER_EXTENSION:-}"
 AGENT_TERMINAL_PI_CONFIG_DIR="${AGENT_TERMINAL_PI_CONFIG_DIR:-}"
@@ -149,13 +148,10 @@ else
   fi
 fi
 if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
-  if [[ $AGENT_TERMINAL_AGENT != pi && $AGENT_TERMINAL_AGENT != omp ]]; then
-    missing+=("AGENT_TERMINAL_AGENT=pi|omp")
-  fi
-  if [[ -z ${AGENT_TERMINAL_AGENT_BIN:-} ]]; then
-    missing+=("AGENT_TERMINAL_AGENT_BIN")
-  elif [[ ! -x $AGENT_TERMINAL_AGENT_BIN ]]; then
-    printf 'error: AGENT_TERMINAL_AGENT_BIN is set to a non-executable file: %s\n' "$AGENT_TERMINAL_AGENT_BIN" >&2
+  if [[ -z ${AGENT_TERMINAL_PI_BIN:-} ]]; then
+    missing+=("AGENT_TERMINAL_PI_BIN")
+  elif [[ ! -x $AGENT_TERMINAL_PI_BIN ]]; then
+    printf 'error: AGENT_TERMINAL_PI_BIN is set to a non-executable file: %s\n' "$AGENT_TERMINAL_PI_BIN" >&2
     exit 1
   fi
   if [[ -z ${AGENT_TERMINAL_EXTENSION:-} ]]; then
@@ -232,25 +228,16 @@ install -d -m 0700 \
   "$ARTIFACT_DIR" \
 
 readonly PROMPT_FILE="$WORKDIR/prompt.md"
-# The probe steps differ per agent (pi: PI_SESSION_ID; omp: injected
-# AGENT_TERMINAL_SCOPE plus an explicit override probe), so the prompt's step
-# count and numbering shift accordingly. The 9 lifecycle steps are written
-# once with __STEP_N__ markers and renumbered below.
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  TOTAL_STEPS=11
-  LIFECYCLE_OFFSET=2
-  # Scope shell reference for the start-command pane marker (scope-marker:):
-  # the fixture exact-matches the start command, and the marker must expand to
-  # the scope of the session that spawned the pane. omp exposes it via the
-  # extension-injected AGENT_TERMINAL_SCOPE; pi via PI_SESSION_ID. The
-  # single-quoted value is substituted verbatim into the prompt text (the
-  # agent types it into the Bash tool, the job shell expands it).
-  SCOPE_MARKER_ENV='$AGENT_TERMINAL_SCOPE'
-else
-  TOTAL_STEPS=10
-  LIFECYCLE_OFFSET=1
-  SCOPE_MARKER_ENV='$PI_SESSION_ID'
-fi
+# The prompt starts with one scope probe, then the 9 lifecycle steps. The
+# prompt is written once with __STEP_N__ markers and renumbered below.
+TOTAL_STEPS=10
+LIFECYCLE_OFFSET=1
+# Scope shell reference for the start-command pane marker (scope-marker:):
+# the fixture exact-matches the start command, and the marker must expand to
+# the scope of the session that spawned the pane. The single-quoted value is
+# substituted verbatim into the prompt text (the agent types it into the Bash
+# tool, the job shell expands it).
+SCOPE_MARKER_ENV='$PI_SESSION_ID'
 
 {
   cat <<'PROMPT_HEAD'
@@ -265,16 +252,9 @@ Execution contract:
 
 Perform this exact __TOTAL_STEPS__-step lifecycle using the job name __JOB_NAME__:
 PROMPT_HEAD
-  if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-    cat <<'PROMPT_PROBE'
-1. Bash: run `printenv AGENT_TERMINAL_SCOPE` and confirm it prints the current omp session id (non-empty). This verifies the extension injected the per-session scope into the Bash tool environment.
-2. Bash: run `AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE` and confirm it prints the literal text shared. This verifies an explicit scope override wins over the injected default.
-PROMPT_PROBE
-  else
-    cat <<'PROMPT_PROBE'
+  cat <<'PROMPT_PROBE'
 1. Bash: run `printenv PI_SESSION_ID` and confirm it prints the current pi session id (non-empty). This verifies the per-session scope is available to the Bash tool.
 PROMPT_PROBE
-  fi
   cat <<'PROMPT_LIFECYCLE'
 __STEP_1__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 __STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; printf "scope-marker:%s\n" "__SCOPE_MARKER_ENV__"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
@@ -315,9 +295,9 @@ trap fail_phase ERR
 : >"$ARTIFACT_DIR/prompt-e2e.jsonl"
 : >"$ARTIFACT_DIR/prompt-e2e.stderr.log"
 
-phase "$AGENT_TERMINAL_AGENT skill tests"
-printf '== %s skill tests ==\n' "$AGENT_TERMINAL_AGENT"
-cd "$REPO_ROOT/$AGENT_TERMINAL_AGENT"
+phase "pi skill tests"
+printf '== pi skill tests ==\n'
+cd "$REPO_ROOT/pi"
 bun test 2>&1 | tee "$ARTIFACT_DIR/bun-test.log"
 
 LAST_JSON=""
@@ -403,29 +383,20 @@ if [[ $remaining_sessions == *agent-terminal-* ]]; then
 fi
 
 if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
-  phase "$AGENT_TERMINAL_AGENT prompt e2e"
-  printf '\n== %s prompt e2e ==\n' "$AGENT_TERMINAL_AGENT"
+  phase "pi prompt e2e"
+  printf '\n== pi prompt e2e ==\n'
 
   # Static package-root discovery exposes the bundled skill: pi reads its
-  # `pi.skills` manifest entry, while omp's native `omp-plugins` provider finds
-  # the shipped `skills/` sibling. The dedicated scripts/e2e-skill-discovery.sh
+  # `pi.skills` manifest entry. The dedicated scripts/e2e-skill-discovery.sh
   # gate proves this in a live agent session by probing the skill's description
-  # phrase (the pi/omp CLIs have no `debug skill` command).
-  AGENT_FLAGS=""
-  if [[ $AGENT_TERMINAL_AGENT == "omp" ]]; then
-    AGENT_FLAGS="--auto-approve --no-pty"
-  fi
-
-  # AGENT_FLAGS is intentionally word-split so omp can add its native flags.
-  # shellcheck disable=SC2086
+  # phrase (the pi CLI has no `debug skill` command).
   PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-600}"
   # Run the agent with a PATH that does not contain the bundled binaries. The
-  # pi adapter's load-time PATH mutation / omp adapter's per-call env PATH
-  # injection still expose them to the Bash tool, so the clean PATH alone does
-  # NOT prove the adapters fired. Scope exposure (PI_SESSION_ID for pi,
-  # AGENT_TERMINAL_SCOPE for omp) is proven separately by the scope-probe Bash
-  # calls that the verifier asserts are the first tool executions and that
-  # match the transcript's session id. The agent is launched from the workdir
+  # pi adapter's load-time PATH mutation still exposes them to the Bash tool,
+  # so the clean PATH alone does NOT prove the adapter fired. Scope exposure
+  # (PI_SESSION_ID) is proven separately by the scope-probe Bash call that the
+  # verifier asserts is the first tool execution and that matches the
+  # transcript's session id. The agent is launched from the workdir
   # so the Bash tool's default cwd is the workdir even if the extension's
   # --cwd flag is not honored. In strict mode the fixture provider extension
   # is loaded alongside the agent-terminal extension; in real mode only the
@@ -433,34 +404,34 @@ if [[ $AGENT_TERMINAL_ENABLE_PROMPT_E2E == 1 ]]; then
   # projected config via --provider/--model.
   cd "$WORKDIR"
   if [[ $AGENT_TERMINAL_VERIFY_MODE == real ]]; then
-    if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_TERMINAL_AGENT_BIN" \
+    if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_TERMINAL_PI_BIN" \
       -p --mode json --provider "$PI_MODEL_PROVIDER" --model "$PI_MODEL_ID" \
       -e "$AGENT_TERMINAL_EXTENSION" \
       --no-context-files --no-lsp --no-session --thinking off \
-      --cwd "$WORKDIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")" \
+      --cwd "$WORKDIR" "$(cat "$PROMPT_FILE")" \
       >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
       cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
       cat "$ARTIFACT_DIR/prompt-e2e.jsonl" >&2
-      printf 'error: %s prompt e2e failed or exceeded %ss timeout\n' "$AGENT_TERMINAL_AGENT" "$PROMPT_E2E_TIMEOUT" >&2
+      printf 'error: pi prompt e2e failed or exceeded %ss timeout\n' "$PROMPT_E2E_TIMEOUT" >&2
       exit 1
     fi
   else
-    if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_TERMINAL_AGENT_BIN" \
+    if ! PATH="$AGENT_TERMINAL_HOST_PATH" timeout "$PROMPT_E2E_TIMEOUT" "$AGENT_TERMINAL_PI_BIN" \
       -p --mode json --model local-fixture/fixture \
       -e "$AGENT_TERMINAL_EXTENSION" -e "$AGENT_TERMINAL_PROVIDER_EXTENSION" \
       --no-skills --no-context-files --no-lsp --no-session --thinking off \
-      --cwd "$WORKDIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")" \
+      --cwd "$WORKDIR" "$(cat "$PROMPT_FILE")" \
       >"$ARTIFACT_DIR/prompt-e2e.jsonl" 2>"$ARTIFACT_DIR/prompt-e2e.stderr.log"; then
       cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
       cat "$ARTIFACT_DIR/prompt-e2e.jsonl" >&2
-      printf 'error: %s prompt e2e failed or exceeded %ss timeout\n' "$AGENT_TERMINAL_AGENT" "$PROMPT_E2E_TIMEOUT" >&2
+      printf 'error: pi prompt e2e failed or exceeded %ss timeout\n' "$PROMPT_E2E_TIMEOUT" >&2
       exit 1
     fi
   fi
 
   cat "$ARTIFACT_DIR/prompt-e2e.stderr.log" >&2
   cat "$ARTIFACT_DIR/prompt-e2e.jsonl"
-  bun run "$REPO_ROOT/pi/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE" --workdir "$WORKDIR" --agent "$AGENT_TERMINAL_AGENT"
+  bun run "$REPO_ROOT/pi/scripts/e2e-verify.ts" "$ARTIFACT_DIR/prompt-e2e.jsonl" "$JOB_NAME" --mode "$AGENT_TERMINAL_VERIFY_MODE" --workdir "$WORKDIR"
 fi
 
 printf '\nAll executed e2e phases passed.\n'
@@ -476,9 +447,9 @@ export STATE_DIR RUN_ID
 phase "e2e execution"
 printf 'Running e2e phases as %s; artifacts: %s\n' "$(id -un)" "$ARTIFACT_DIR"
 
-# AGENT_TERMINAL_SCOPE is deliberately NOT set here: the adapter must expose
-# the per-session scope (pi's native PI_SESSION_ID, omp's injected
-# AGENT_TERMINAL_SCOPE), and setting it would defeat the scope probes.
+# AGENT_TERMINAL_SCOPE is deliberately NOT set here: pi's native
+# PI_SESSION_ID must supply the per-session scope, and setting an explicit
+# scope would defeat the scope probe.
 # Pass through the explicitly allowlisted provider env vars (values are stripped
 # by env -i otherwise). Everything else stays out of the sandbox.
 PROVIDER_ENV_PASSTHRU=()
@@ -528,8 +499,7 @@ env -i \
   ZELLIJ_SOCKET_DIR="$ZELLIJ_SOCKET_DIR" \
   AGENT_TERMINAL_STATE="$STATE_DIR" \
   AGENT_TERMINAL_BIN="${AGENT_TERMINAL_BIN:-}" \
-  AGENT_TERMINAL_AGENT="$AGENT_TERMINAL_AGENT" \
-  AGENT_TERMINAL_AGENT_BIN="${AGENT_TERMINAL_AGENT_BIN:-}" \
+  AGENT_TERMINAL_PI_BIN="${AGENT_TERMINAL_PI_BIN:-}" \
   AGENT_TERMINAL_EXTENSION="${AGENT_TERMINAL_EXTENSION:-}" \
   AGENT_TERMINAL_PROVIDER_EXTENSION="${AGENT_TERMINAL_PROVIDER_EXTENSION:-}" \
   AGENT_TERMINAL_PI_CONFIG_DIR="${AGENT_TERMINAL_PI_CONFIG_DIR:-}" \

@@ -133,8 +133,8 @@ pub fn project_digest(project_root: &Path) -> String {
 /// direct users keep persistent state across invocations.
 pub const SCOPE_ENV: &str = "AGENT_TERMINAL_SCOPE";
 
-/// Environment variable pi (and omp, which is pi-based) injects into bash
-/// tool commands to identify the current session.
+/// Environment variable pi injects into bash tool commands to identify the
+/// current session.
 ///
 /// Used as a fallback scope source so agent-terminal gets per-session
 /// isolation under pi even without the extension.
@@ -144,7 +144,7 @@ pub const PI_SESSION_ID_ENV: &str = "PI_SESSION_ID";
 ///
 /// Resolution order:
 /// 1. [`SCOPE_ENV`] (`AGENT_TERMINAL_SCOPE`) — explicit, overridable.
-/// 2. [`PI_SESSION_ID_ENV`] (`PI_SESSION_ID`) — pi/omp native session id.
+/// 2. [`PI_SESSION_ID_ENV`] (`PI_SESSION_ID`) — pi's native session id.
 /// 3. `"standalone"` — default for direct CLI use.
 ///
 /// Empty or whitespace-only values are treated as absent.

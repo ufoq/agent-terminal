@@ -35,14 +35,6 @@ const MANIFESTS = [
     relPath: "pi/npm/packages/pi-agent-terminal-bundle-zellij/package.json",
     name: "@ufoq/pi-agent-terminal-bundle-zellij",
   },
-  {
-    relPath: "omp/npm/packages/omp-agent-terminal/package.json",
-    name: "@ufoq/omp-agent-terminal",
-  },
-  {
-    relPath: "omp/npm/packages/omp-agent-terminal-bundle-zellij/package.json",
-    name: "@ufoq/omp-agent-terminal-bundle-zellij",
-  },
 ]
 
 // Strict semver.org grammar: MAJOR.MINOR.PATCH with optional prerelease and

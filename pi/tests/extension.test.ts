@@ -313,21 +313,6 @@ describe("pi agent-terminal extension", () => {
         ),
         name: "@ufoq/pi-agent-terminal-bundle-zellij",
       },
-      {
-        path: join(repoRoot, "omp", "npm", "packages", "omp-agent-terminal", "package.json"),
-        name: "@ufoq/omp-agent-terminal",
-      },
-      {
-        path: join(
-          repoRoot,
-          "omp",
-          "npm",
-          "packages",
-          "omp-agent-terminal-bundle-zellij",
-          "package.json",
-        ),
-        name: "@ufoq/omp-agent-terminal-bundle-zellij",
-      },
     ]
     expect(typeof release.version).toBe("string")
     for (const { path, name } of packages) {

@@ -72,16 +72,6 @@ function parseJsonOutput(output: string | undefined): unknown {
   try {
     return JSON.parse(trimmed)
   } catch {
-    // omp's bash tool appends "\n\nWall time: X seconds\n\nCommand exited with code N"
-    // after the actual output. Try to extract the first JSON object.
-    const jsonStart = trimmed.indexOf("{")
-    if (jsonStart < 0) return undefined
-    for (let end = trimmed.length; end > jsonStart; end--) {
-      const candidate = trimmed.slice(jsonStart, end)
-      try {
-        return JSON.parse(candidate)
-      } catch {}
-    }
     return undefined
   }
 }
@@ -127,34 +117,16 @@ function containsAgentTerminalToken(command: string): boolean {
   return /(?:^|[\s'"])agent-terminal\b/.test(command)
 }
 
-export type AgentKind = "pi" | "omp"
-
-// The scope probes are the first Bash calls in the deterministic gate. They
-// prove the extension exposed the per-session scope to the Bash tool, by
-// printing it back into the tool result. pi's adapter injects nothing: the
-// scope IS the native PI_SESSION_ID the agent already exports. omp's adapter
-// injects AGENT_TERMINAL_SCOPE (session id) plus PATH into the Bash tool's
-// env input, and the explicit `AGENT_TERMINAL_SCOPE=shared` override probe
-// proves an explicitly requested scope wins over the injected default. The
-// exact-match checks below are what actually guard cross-agent isolation.
+// The scope probe is the first Bash call in the deterministic gate. It proves
+// the CLI receives pi's native PI_SESSION_ID by printing it back into the tool
+// result. The exact-match check below is what guards per-session isolation.
 const PI_PROBE_COMMAND = "printenv PI_SESSION_ID"
-const OMP_SCOPE_PROBE_COMMAND = "printenv AGENT_TERMINAL_SCOPE"
-const OMP_SCOPE_OVERRIDE_PROBE_COMMAND = "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE"
 
 type AgentProbe = {
   readonly command: string
-  // "session" probes must print exactly the transcript session header id;
-  // "shared" is a literal expected value.
-  readonly expected: "session" | "shared"
 }
 
-const AGENT_PROBES: Readonly<Record<AgentKind, readonly AgentProbe[]>> = {
-  pi: [{ command: PI_PROBE_COMMAND, expected: "session" }],
-  omp: [
-    { command: OMP_SCOPE_PROBE_COMMAND, expected: "session" },
-    { command: OMP_SCOPE_OVERRIDE_PROBE_COMMAND, expected: "shared" },
-  ],
-}
+const AGENT_PROBES: readonly AgentProbe[] = [{ command: PI_PROBE_COMMAND }]
 
 function parseAgentTerminalCommand(command: string | undefined): ParsedAgentCommand {
   if (!command) return { kind: "other" }
@@ -243,10 +215,9 @@ export function verifyE2E(
   jobName: string,
   mode: VerifyMode = "strict",
   expectedWorkdir?: string,
-  agent: AgentKind = "pi",
 ): Result {
   const events = parseTranscript(path)
-  const probes = AGENT_PROBES[agent]
+  const probes = AGENT_PROBES
 
   // Strict mode rejects error events (auto_retry_start, or any event carrying
   // an errorMessage) because the deterministic gate must complete without
@@ -267,9 +238,7 @@ export function verifyE2E(
   }
 
   // The first line of the agent's `--mode json` stream is the session header,
-  // whose `id` is what the probes must print back: for pi it is the native
-  // PI_SESSION_ID, for omp the AGENT_TERMINAL_SCOPE the adapter injects into
-  // the Bash tool env input.
+  // whose `id` is the native PI_SESSION_ID the probe must print back.
   const header = events[0]
   if (header === undefined || header.type !== "session") {
     return { ok: false, error: "transcript does not start with a session header line" }
@@ -362,17 +331,11 @@ export function verifyE2E(
           return { ok: false, error: "internal: probe start index out of range" }
         }
         const output = extractToolOutput(ev.result)
-        const printed = output.replace(/\n\nWall time:.*$/s, "").trim()
-        if (probe.expected === "session" && printed !== sessionId) {
+        const printed = output.trim()
+        if (printed !== sessionId) {
           return {
             ok: false,
             error: `probe "${probe.command}" printed "${printed}", expected the session id "${sessionId}"`,
-          }
-        }
-        if (probe.expected !== "session" && printed !== "shared") {
-          return {
-            ok: false,
-            error: `probe "${probe.command}" printed "${printed}", expected "shared"`,
           }
         }
         continue
@@ -450,7 +413,7 @@ export function verifyE2E(
   // gate pins identically named panes by it); the literal must dereference
   // the scope env var of the agent under test, matching e2e-fixture.ts's
   // stepStart byte-for-byte.
-  const scopeMarkerEnv = agent === "omp" ? "AGENT_TERMINAL_SCOPE" : "PI_SESSION_ID"
+  const scopeMarkerEnv = "PI_SESSION_ID"
   const expectedCommands = {
     initialList: "agent-terminal list",
     start: `agent-terminal start ${jobName} -- /bin/bash -lc 'printf "prompt-ready\\n"; printf "scope-marker:%s\\n" "$${scopeMarkerEnv}"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'`,
@@ -672,7 +635,7 @@ export function verifyE2E(
 }
 
 const USAGE =
-  "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path] [--agent pi|omp]"
+  "usage: bun run e2e-verify.ts <transcript.jsonl> <job-name> [--mode strict|real] [--workdir path]"
 
 export function main(): void {
   const args = process.argv.slice(2)
@@ -680,7 +643,6 @@ export function main(): void {
   let jobName = ""
   let mode: VerifyMode = "strict"
   let expectedWorkdir: string | undefined
-  let agent: AgentKind = "pi"
   for (let i = 0; i < args.length; i++) {
     const argument = args[i]
     if (argument === undefined) continue
@@ -695,23 +657,6 @@ export function main(): void {
       i++
       continue
     }
-    if (argument === "--agent") {
-      const v = args[i + 1]
-      if (v === undefined) {
-        console.error("--agent requires a value: pi or omp")
-        console.error(USAGE)
-        process.exit(2)
-      }
-      if (v !== "pi" && v !== "omp") {
-        console.error(`invalid --agent value: ${v}`)
-        console.error("--agent accepts exactly pi or omp")
-        console.error(USAGE)
-        process.exit(2)
-      }
-      agent = v
-      i++
-      continue
-    }
     if (!path) path = argument
     else if (!jobName) jobName = argument
   }
@@ -719,7 +664,7 @@ export function main(): void {
     console.error(USAGE)
     process.exit(2)
   }
-  const result = verifyE2E(path, jobName, mode, expectedWorkdir, agent)
+  const result = verifyE2E(path, jobName, mode, expectedWorkdir)
   if (!result.ok) {
     console.error(`e2e verification failed: ${result.error}`)
     process.exit(1)

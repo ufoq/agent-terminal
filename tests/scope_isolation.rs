@@ -5,10 +5,9 @@
 //! Two `agent-terminal start server` processes run concurrently in separate
 //! scopes (`PI_SESSION_ID=A` / `PI_SESSION_ID=B`, `AGENT_TERMINAL_SCOPE`
 //! unset) against the same project, state root, socket namespace, and job
-//! name. This is the exact scope-resolution path the pi and omp host adapters
-//! rely on: pi injects `PI_SESSION_ID` natively and omp injects
-//! `AGENT_TERMINAL_SCOPE`, and the CLI must keep the two sessions fully
-//! isolated.
+//! name. This is the exact scope-resolution path the pi host adapter relies
+//! on: pi injects `PI_SESSION_ID` natively, and the CLI must keep the two
+//! sessions fully isolated.
 //!
 //! Both starts must report a running job, each scope's `list` must see only
 //! its own job, an unrelated scope must see nothing, and stopping each job

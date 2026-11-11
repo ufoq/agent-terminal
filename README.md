@@ -1,330 +1,250 @@
 # agent-terminal
 
-`agent-terminal` gives coding agents a small, project-scoped interface for persistent and
-interactive terminal jobs. Zellij provides the PTY and human-visible panes; agents work only with
-logical job names. The wrapper adds ownership reconciliation, atomic state, and lifecycle recovery
-so the agent does not have to track Zellij sessions or pane IDs.
+Persistent terminal jobs for coding agents.
 
-The project contains:
+`agent-terminal` runs each job in its own Zellij pane, so a server, watcher, REPL, or
+interactive command keeps running while the agent reads output, sends input, and presses
+keys across turns. Jobs survive across agent turns, and a bounded 200-line screen keeps
+every response small.
 
-- a standalone Rust CLI;
-- a pi/omp coding agent extension that bundles the CLI and skill;
-- no daemon, HTTP service, persistent output log, or raw Zellij command passthrough.
+This repository ships one CLI and one integration: a pi extension plus its skill. The
+bundle package includes a pinned Zellij binary.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [CLI](#cli)
+- [pi integration](#pi-integration)
+- [Lifecycle](#lifecycle)
+- [Scope and isolation](#scope-and-isolation)
+- [End-to-end testing](#end-to-end-testing)
+- [Optional real-model e2e](#optional-real-model-e2e)
+- [Releasing](#releasing)
+- [Development](#development)
+- [License](#license)
 
 ## Requirements
 
-- Linux x86_64;
-- Zellij 0.44.3 or newer for the source build and the slim npm packages;
-- the bundle variants include their own pinned Zellij binary;
-- Rust 1.85 or newer for source builds;
-- Bun for the pi/omp extension tests and quality gates.
+- Linux x86_64
+- [Zellij](https://zellij.dev) 0.44 or newer
+- pi for the agent integration
+
+The `-bundle-zellij` packages ship a pinned Zellij binary, so no system Zellij install is
+needed for those; the plain packages require `zellij` on `PATH`. Builds need Rust, Bun,
+and Python 3. Runtime needs only the packaged binary and Zellij.
 
 ## Install
 
-```bash
+### CLI
+
+```sh
 cargo install --path .
-agent-terminal --version
+# or build a static binary
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-The controller finds `zellij` on `PATH`. When a bundle package is used, it prepends a bundled
-Zellij binary to `PATH` so no host install is needed.
+### pi extension and skill
+
+```sh
+pi install npm:@ufoq/pi-agent-terminal-bundle-zellij
+# or, without the bundled Zellij binary
+pi install npm:@ufoq/pi-agent-terminal
+```
+
+The extension registers the `agent-terminal` skill and puts its packaged binary on
+`PATH`, so the agent discovers the commands without any env setup.
 
 ## CLI
 
-All machine responses are one compact JSON object on stdout. Diagnostics go to stderr. `--help`
-and `--version` are intentionally plain text.
-
 ```text
-agent-terminal [OPTIONS] <COMMAND>
-
-Commands:
-  start  Start a persistent terminal job
-  read   Read lifecycle state and the bounded visible screen
-  send   Send literal text, followed by Enter by default
-  press  Press canonical named keys
-  stop   Stop and clean up a job
-  list   List project-scoped jobs
+agent-terminal start <NAME> [--cwd DIR] [--detached] [--json] -- <COMMAND...>
+agent-terminal read <NAME> [--json]
+agent-terminal send <NAME> [--json] -- <TEXT...>
+agent-terminal press <NAME> [--json] -- <KEY...>
+agent-terminal stop <NAME> [--json]
+agent-terminal list [--json]
 ```
 
-Example:
+- `start` creates a named job in its own Zellij pane and runs the command inside it.
+  `--cwd` changes the working directory; it is only valid on `start`.
+- `read` returns the current 200-line screen and job state. Read it before resending
+  input.
+- `send` writes literal text to the job's pane.
+- `press` sends named keys such as `Enter`, `Tab`, or `Escape`.
+- `stop` stops the job and removes it.
+- `list` lists jobs in the current scope.
 
-```bash
-agent-terminal start dev-server -- npm run dev
-agent-terminal read dev-server
-agent-terminal send repl -- '2 + 2'
-agent-terminal press debugger -- Down Enter
-agent-terminal stop dev-server
-agent-terminal list
+The `--json` envelope is stable for programmatic use:
+
+```json
+{
+  "status": "ok",
+  "jobs": [
+    {
+      "name": "dev",
+      "state": "running",
+      "cwd": "/home/me/project",
+      "last_activity": "2026-01-15T10:23:45Z",
+      "exit_code": null
+    }
+  ]
+}
 ```
 
-Use `--project <path>` to select the project scope. It defaults to the nearest Git root, or to the
-current directory when not inside a Git repository. `start` defaults `--cwd` to the invocation
-directory. Set `AGENT_TERMINAL_STATE` or pass `--state-dir <path>` to override the operating-system
-state directory.
+`read` adds a `screen` field and the job's `state`, `exit_code`, and `last_activity`;
+`start`, `send`, `press`, and `stop` return the corresponding status acknowledgement.
+Errors are returned as `{"status": "error", "error": "...", "message": "..."}` with a
+non-zero exit code.
 
-Job names must match `[a-z0-9][a-z0-9._-]{0,63}`. The same job name may be used independently in
-different project roots.
+## pi integration
 
-## pi / omp skill
+The pi package is loaded through pi's package manager:
 
-Four npm package artifacts are built, one slim and one Zellij-bundling variant per host:
-
-- `@ufoq/pi-agent-terminal` — bundles the static Linux x86_64 `agent-terminal` binary and the
-  skill. The host must have Zellij on `PATH`.
-- `@ufoq/pi-agent-terminal-bundle-zellij` — same as above, plus a pinned Zellij binary so no
-  host install is required.
-- `@ufoq/omp-agent-terminal` — the omp variant of the slim package.
-- `@ufoq/omp-agent-terminal-bundle-zellij` — the omp variant with the pinned Zellij binary.
-
-The two pi packages are published to the npm registry. The two omp packages are built locally but
-not yet published; load them from the local package root until publication.
-
-Each package ships a per-host adapter extension plus the bundled binary and skill. Pi manifests
-declare both resources (`"pi": { "extensions": ["./dist/index.js"], "skills": ["./skills"] }`); OMP
-manifests declare only the extension entry point, and omp's native `omp-plugins` provider discovers
-the shipped `skills/` sibling when the package root loads. Load pi packages with `pi install
-npm:@ufoq/pi-agent-terminal` (append `-l` for project-local settings), or for one run with `pi -e
-npm:@ufoq/pi-agent-terminal`. Pi's extension auto-load directory is extension-only and does not read
-the package's `pi.skills` metadata. Load omp packages via omp's `-e` flag or auto-discovery from
-`~/.omp/agent/extensions/`.
-
-### pi adapter
-
-The pi adapter does not touch the bash tool at all: pi's native bash keeps its stock definition, and
-the extension only
-
-- mutates `process.env.PATH` at load time so the bundled binary directories (`bin/linux-x64` and,
-  for the bundle variant, `bin/zellij`) are ordered ahead of pi's managed `~/.pi/agent/bin`;
-- registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide natively.
-
-The bundled skill is discovered statically through the package's `pi.skills` manifest entry
-(`["./skills"]`), so the adapter registers no skill handler. Loading the package root (`-e <package
-root>` or `npm:`) discovers both the declared extension and the skill; loading the dist file
-directly (`-e <package>/dist/index.js`) is extension-only.
-
-Per-session isolation is native: pi injects `PI_SESSION_ID` into every bash child, and the Rust CLI
-falls back to `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID` → `standalone`. No extension code is
-involved, so pi gets per-session isolation even when the extension is not loaded.
-
-### omp adapter
-
-omp's native bash tool is not replaced either: the adapter registers a `tool_call` input-revision
-handler that adjusts the arguments bash executes with, preserving the native schema, approval gate,
-concurrency, and `async` conditionality. For each `bash` tool call it
-
-- defaults `AGENT_TERMINAL_SCOPE` to the omp session id when the call carries no explicit value;
-- prepends the bundled binary directories to the bash `env.PATH`;
-- registers the compatibility flag `--no-context-files`, which omp does not provide natively
-  (`--no-lsp` and `--cwd` are native to omp and are not registered).
-
-The skill is discovered statically through omp's `omp-plugins` provider when the package root is
-loaded.
-
-Use the package root, not the dist file:
-
-```bash
-pi -e npm:@ufoq/pi-agent-terminal-bundle-zellij
-omp -e npm:@ufoq/omp-agent-terminal-bundle-zellij          # post-publication
-omp -e omp/npm/packages/omp-agent-terminal-bundle-zellij   # local, until published
+```sh
+pi install npm:@ufoq/pi-agent-terminal-bundle-zellij
 ```
+
+Or from a local package root:
+
+```sh
+pi install ./pi/npm/packages/pi-agent-terminal-bundle-zellij
+```
+
+The package declares its extension and skill in the `pi` manifest field:
+
+```json
+{
+  "pi": {
+    "extensions": ["./dist/index.js"],
+    "skills": ["./skills"]
+  }
+}
+```
+
+The extension only prepares `PATH` for the Bash tool and registers the compatibility
+flags. It never replaces or wraps pi's bash tool. The skill is discovered statically from
+the package root; loading `dist/index.js` directly is extension-only and does not expose
+the skill.
 
 ## Lifecycle
 
-Public states are deliberately small:
+A job lives in its own Zellij pane:
 
-- `running`
-- `exited`, with an optional exit code
+```sh
+agent-terminal start dev -- npm run dev
+agent-terminal read dev
+agent-terminal send dev -- "hello"
+agent-terminal press dev -- Enter
+agent-terminal read dev
+agent-terminal stop dev
+```
 
-Exited panes are held so their visible screen and exit status remain readable. `stop` closes the
-pane and removes the job. Stop sends Ctrl+C, waits up to 5 seconds for the command to exit, then
-force-closes the pane and removes the job. It auto-escalates; no `--force` flag is needed. When the
-last job in a session is stopped, `stop` also tears down that session's Zellij server, so there is
-no daemon left behind.
+- `start` creates a pane and starts the command.
+- The job's state is `running` until the command exits, then `exited` with its exit code.
+- `read` returns the bounded screen; the pane keeps running between reads.
+- `send` writes text without pressing Enter; `press` sends the key.
+- `stop` stops the process and removes the job.
+- Jobs are keyed to the project root containing the current working directory.
 
-Screen reads are ANSI-stripped and bounded to the newest 200 lines and 32 KiB. They represent the
-visible terminal screen, not a canonical stdout/stderr log.
+A job that finishes stays visible until `stop` removes it. `list` shows the current
+scope's jobs.
 
-## Cross-agent isolation
+## Scope and isolation
 
-Each pi/omp session gets its own invisible scope so concurrent agents never interfere. State and
-Zellij sockets are isolated per scope. Pi uses its native `PI_SESSION_ID`; omp's adapter defaults
-`AGENT_TERMINAL_SCOPE` to the omp session id. The model uses only job names and does not manage
-scoping. The variable is optional and overridable: to share terminal state across agents (for
-example a parent and subagent on the same task), each sets it to the same task-specific value such
-as `20260803-fix-auth-refactor`. When running the CLI directly without a plugin, the scope defaults
-to `standalone`.
+State is isolated per agent session and per project. The CLI resolves scope from
+`AGENT_TERMINAL_SCOPE`, then pi's `PI_SESSION_ID`, then the literal `standalone`. That
+means two concurrent pi sessions in the same project cannot see each other's jobs, while
+repeated calls from one session address the same jobs.
+
+The state root is `~/.local/state/agent-terminal` (or
+`$XDG_STATE_HOME/agent-terminal`). Jobs for a scope live under
+`<state-root>/scopes/<scope-digest>/projects/<project-digest>/`, alongside the private
+`config.kdl` passed to Zellij. That directory is created `0700`.
 
 ## End-to-end testing
 
-`scripts/e2e-pi-local.sh` is a fully automated, deterministic gate for pi/omp. It runs as the
-invoking user, starts a local OpenAI-compatible **fixture** server that drives the agent-terminal
-lifecycle deterministically, builds the locally bundled package for the agent under test, and
-exercises a real Zellij server end-to-end through the real pi/omp binary with the extension loaded
-via `-e`.
+The deterministic gate uses a local OpenAI-compatible fixture server and a real pi binary:
 
-The fixture replaces the LLM in the loop: instead of a model that must decide to call the Bash
-tool, the fixture emits the exact next bash tool call, validates each step's real agent-terminal
-JSON output, and advances through the lifecycle. The gate is fast, deterministic, and still proves
-the full integration: real pi/omp, real extension hooks, real Bash execution, and the real
-agent-terminal binary against a live Zellij server.
-
-`AGENT_TERMINAL_AGENT` selects the agent under test: `pi` (default) or `omp`. Each agent uses its
-own package and workspace build. The fixture provider is registered through a small provider
-extension file, since pi/omp do not read a config file for custom providers.
-
-The prompt's first steps are per-agent scope probes:
-
-- pi: `printenv PI_SESSION_ID` must equal the transcript's session header id.
-- omp: `printenv AGENT_TERMINAL_SCOPE` must equal the session header id, and an explicit override
-  must win.
-
-```bash
-AGENT_TERMINAL_AGENT=pi bash scripts/e2e-pi-local.sh
-AGENT_TERMINAL_AGENT=omp bash scripts/e2e-pi-local.sh
-```
-
-Run the per-agent gate from its own workspace with Bun:
-
-```bash
+```sh
 cd pi
 bun run e2e:pi
-bun run e2e:pi:skip-prompt
 ```
 
-```bash
-cd omp
-bun run e2e:omp
-bun run e2e:omp:skip-prompt
-```
+It covers the full lifecycle: list, start, read, send, press, stop, and list again. The
+fixture replaces only the model's reasoning; the pi extension, Bash execution, Zellij, and
+agent-terminal are real.
 
-The full release gate also runs the per-agent workspace `bun run check` first:
+Additional gates:
 
-```bash
+```sh
 cd pi
-bun run release:check
+bun run e2e:pi:skip-prompt   # direct CLI smoke only
+bun run e2e:pi:skills        # static skill discovery through pi
 ```
 
-`AGENT_TERMINAL_JOB_NAME` overrides the job name used by the fixture, prompt, and verifier.
+The two-session isolation gate runs two fixtures against one project:
 
-Two additional scripts cover cross-session and skill concerns:
-
-- `scripts/e2e-two-session.sh` — starts two fixture servers with `AGENT_TERMINAL_FIXTURE_HOLD=1`,
-  runs two agent sessions concurrently against one shared project directory and state root, and
-  asserts each scope sees only its own job.
-- `scripts/e2e-skill-discovery.sh` — asserts the skill description reaches the first provider
-  request, proving static package-root discovery.
-
-```bash
-AGENT_TERMINAL_AGENT=pi bash scripts/e2e-two-session.sh
-AGENT_TERMINAL_AGENT=omp bash scripts/e2e-two-session.sh
-AGENT_TERMINAL_AGENT=pi bash scripts/e2e-skill-discovery.sh
-AGENT_TERMINAL_AGENT=omp bash scripts/e2e-skill-discovery.sh
+```sh
+bash scripts/e2e-two-session.sh
 ```
 
-### Optional real-model e2e
+The gates create private state roots under `/tmp`, load the bundle package, and clean up
+after themselves. Set `AGENT_TERMINAL_CLEANUP=0` to keep the artifacts.
 
-`scripts/e2e-pi-real.sh` is the optional, local-only companion test. It drives the same lifecycle
-through the real pi/omp binary with a real model from your own config, loading the per-agent
-package. It consumes real tokens, is not part of `release:check`, and is refused under CI unless
-you opt in.
+## Optional real-model e2e
 
-```bash
-AGENT_TERMINAL_AGENT=pi PI_MODEL=litellm/deepseek-v4-flash bash scripts/e2e-pi-real.sh
+`scripts/e2e-pi-real.sh` is a local-only, real-model check. It is not a release gate and
+requires a provider/model from your own pi config:
+
+```sh
+PI_MODEL=litellm/ollama-cloud/deepseek-v4-flash \
+  bash scripts/e2e-pi-real.sh
 ```
 
-The wrapper projects only the selected provider's model config (`models.json` for pi, `models.yml`
-for omp) and `auth.json` entries plus a minimal `settings.json` into a sandbox config dir
-(`PI_CODING_AGENT_DIR`), and always deletes that sandbox config on exit, even on failure. Provider
-credentials pass through only via an explicit env-var allowlist
-(`AGENT_TERMINAL_PROVIDER_ENV_VARS`).
-
-Run from the agent's own workspace with Bun:
-
-```bash
-cd pi
-bun run e2e:pi:real
-```
-
-```bash
-cd omp
-bun run e2e:omp:real
-```
-
-Environment variables:
-
-- `PI_MODEL` — `provider/model` alias that exists in your pi config (required).
-- `AGENT_TERMINAL_PI_CONFIG` — path to your real pi config directory (default `~/.pi/agent`).
-- `AGENT_TERMINAL_PROVIDER_ENV_VARS` — comma-separated allowlist of env vars passed through.
-- `AGENT_TERMINAL_PROMPT_E2E_TIMEOUT` — model run timeout in seconds (default `900`).
-- `AGENT_TERMINAL_ALLOW_REAL_MODEL_CI` — set to `1` to permit execution under CI.
+It projects only the selected provider's `models.json` and `auth.json` entries into a
+sandbox config directory, drives the same lifecycle through a real model, and deletes the
+sandbox config on exit.
 
 ## Releasing
 
-`release.json` at the repository root is the single source of truth for the npm release version.
+The two pi packages are versioned together from `release.json`:
 
-`scripts/release-version.mjs` (zero-dependency Node) keeps that file and the four npm manifests in
-lockstep. The managed packages are `@ufoq/pi-agent-terminal`,
-`@ufoq/pi-agent-terminal-bundle-zellij`, `@ufoq/omp-agent-terminal`, and
-`@ufoq/omp-agent-terminal-bundle-zellij`.
-
-Validate the current state:
-
-```bash
+```sh
 node scripts/release-version.mjs check
+node scripts/release-version.mjs sync 0.2.0
 ```
 
-Cut a release from the repository root in this exact order:
+Then build and publish serially:
 
-1. `node scripts/release-version.mjs sync <version>` — writes `release.json` and the four
-   manifests.
-2. `node scripts/release-version.mjs check` — re-validates the synchronized state.
-3. Commit the synchronized change.
-4. Create the `v<version>` tag **after** that commit.
-5. Build and pack each host workspace, then pack the four package directories into a temporary
-   artifact directory.
-6. Publish those exact tarballs with `npm publish --access public`.
+```sh
+cd pi
+bun run build
+npm publish npm/packages/pi-agent-terminal
+npm publish npm/packages/pi-agent-terminal-bundle-zellij
+```
 
-Delete the artifact directory after publishing.
+Publishing is intentionally serial: concurrent publishes can hit registry rate limits.
+Allow a few minutes for CDN propagation before installing the new version elsewhere.
 
 ## Development
 
-Rust quality gate:
+Repository layout:
 
-```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
-cargo build --release
+- `src/` — Rust CLI and the Zellij backend.
+- `pi/` — pi extension, skill source, npm packages, and e2e fixtures.
+- `scripts/` — shared build, release, and e2e helpers.
+- `docs/design.md` — the implementation contract.
+
+Useful commands:
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+cd pi && bun run check
 ```
 
-Single Rust test:
-
-```bash
-cargo test --test zellij_e2e start_read_stop_when_job_is_running -- --exact
-```
-
-pi/omp extension quality gates:
-
-```bash
-cd pi
-bun install
-bun run check
-```
-
-```bash
-cd omp
-bun install
-bun run check
-```
-
-Single pi extension test:
-
-```bash
-cd pi
-bun test -t 'PATH ordering'
-```
-
-Real-Zellij integration tests create isolated controller sessions and remove them in test cleanup.
+`bun run check` runs formatting, linting, type checks, tests, and the bundle build.
 
 ## License
 

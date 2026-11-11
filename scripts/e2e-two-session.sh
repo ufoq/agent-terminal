@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Two-session isolation e2e gate for agent-terminal through the pi and omp
+# Two-session isolation e2e gate for agent-terminal through pi
 # coding agents.
 #
 # Launches TWO independent agent sessions against TWO local fixture servers,
@@ -16,22 +16,20 @@
 #     is honored end to end.
 #
 # No model is involved: the fixture provider extension replaces the model,
-# exactly like scripts/e2e-pi-local.sh (a real pi/omp binary, real extension
+# exactly like scripts/e2e-pi-local.sh (a real pi binary, real extension
 # hooks, real Bash execution, real agent-terminal).
 #
 # Usage:
-#   AGENT_TERMINAL_AGENT=pi bash scripts/e2e-two-session.sh
-#   AGENT_TERMINAL_AGENT=omp bash scripts/e2e-two-session.sh
+#   bash scripts/e2e-two-session.sh
 #
 # Environment overrides:
-#   AGENT_TERMINAL_AGENT             - agent under test: pi (default) or omp
 #   AGENT_TERMINAL_BIN               - agent-terminal binary to test (default:
 #                                      target/x86_64-unknown-linux-musl/release/agent-terminal)
 #   AGENT_TERMINAL_FIXTURE_HOLD_SECS - hold sleep duration for the fixtures
 #                                      (default: 45; must be >= 30)
 #   AGENT_TERMINAL_CLEANUP           - delete temp dirs on exit (default: 0)
 #   AGENT_TERMINAL_SKIP_PREFLIGHT    - skip the agent package build (default: 0)
-#   AGENT_TERMINAL_PROMPT_E2E_TIMEOUT - per-agent run timeout (default: 600)
+#   AGENT_TERMINAL_PROMPT_E2E_TIMEOUT - pi run timeout (default: 600)
 
 set -Eeuo pipefail
 
@@ -58,7 +56,6 @@ readonly FIXTURE_SCRIPT="$REPO_ROOT/pi/scripts/e2e-fixture.ts"
 
 CLEANUP="${AGENT_TERMINAL_CLEANUP:-0}"
 SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
-AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
 FIXTURE_HOLD_SECS="${AGENT_TERMINAL_FIXTURE_HOLD_SECS:-45}"
 PROMPT_E2E_TIMEOUT="${AGENT_TERMINAL_PROMPT_E2E_TIMEOUT:-600}"
 
@@ -144,11 +141,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-case "$AGENT_TERMINAL_AGENT" in
-  pi|omp) ;;
-  *) fail "AGENT_TERMINAL_AGENT must be pi or omp, got: $AGENT_TERMINAL_AGENT" ;;
-esac
-
 # The hold must be long enough for the mid-lifecycle cross-checks below.
 if [[ ! $FIXTURE_HOLD_SECS =~ ^[0-9]+$ ]] || (( FIXTURE_HOLD_SECS < 30 )); then
   fail "AGENT_TERMINAL_FIXTURE_HOLD_SECS must be an integer >= 30, got: $FIXTURE_HOLD_SECS"
@@ -179,30 +171,17 @@ else
   AT_BIN="$REPO_ROOT/target/x86_64-unknown-linux-musl/release/agent-terminal"
 fi
 
-# The agent wrapper + the bundle for the agent under test. The build produces
-# the dist/index.js extension and the bundled bin/zellij used by the harness
-# PATH below.
-if [[ $AGENT_TERMINAL_AGENT == pi ]]; then
-  WS_ROOT="$REPO_ROOT/pi"
-  BUNDLE_PACKAGE="$WS_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
-  PI_DIR="${AGENT_TERMINAL_PI_DIR:-$HOME/.local/pi/pkg}"
-  if [[ ! -f $PI_DIR/dist/cli.js ]]; then
-    fail "pi package not found at $PI_DIR (set AGENT_TERMINAL_PI_DIR)"
-  fi
-else
-  WS_ROOT="$REPO_ROOT/omp"
-  BUNDLE_PACKAGE="$WS_ROOT/npm/packages/omp-agent-terminal-bundle-zellij"
-  OMP_BIN="$(command -v omp 2>/dev/null || true)"
-  if [[ -z $OMP_BIN && -x /usr/local/bin/omp ]]; then
-    OMP_BIN=/usr/local/bin/omp
-  fi
-  if [[ -z $OMP_BIN ]]; then
-    fail "omp binary not found on PATH or at /usr/local/bin/omp"
-  fi
+# The pi wrapper + bundle. The build produces the dist/index.js extension and
+# the bundled bin/zellij used by the harness PATH below.
+WS_ROOT="$REPO_ROOT/pi"
+BUNDLE_PACKAGE="$WS_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
+PI_DIR="${AGENT_TERMINAL_PI_DIR:-$HOME/.local/pi/pkg}"
+if [[ ! -f $PI_DIR/dist/cli.js ]]; then
+  fail "pi package not found at $PI_DIR (set AGENT_TERMINAL_PI_DIR)"
 fi
 
 if [[ $SKIP_PREFLIGHT != 1 ]]; then
-  printf 'Building %s bundle ...\n' "$AGENT_TERMINAL_AGENT"
+  printf 'Building pi bundle ...\n'
   cd "$WS_ROOT"
   if ! bun run build; then
     fail "bun run build failed for $WS_ROOT"
@@ -225,7 +204,7 @@ if [[ -z ${AGENT_TERMINAL_BIN:-} && ! -x $AT_BIN ]]; then
   fail "agent-terminal binary not found: $AT_BIN (build it or set AGENT_TERMINAL_BIN)"
 fi
 # The harness resolves agent-terminal from the bundle's
-# bin/linux-x64/agent-terminal (pi/npm/src/index.ts, omp/npm/src/index.ts),
+# bin/linux-x64/agent-terminal (pi/npm/src/index.ts),
 # so the installed copy must be the binary under test: installing after the
 # build keeps the agent-side cross-checks and the host-side cross-checks on
 # the exact same binary.
@@ -244,21 +223,12 @@ install -d -m 0700 \
   "$ARTIFACT_DIR" \
   "$SANDBOX/bin"
 
-# The agent wrapper. pi runs as `bun <package>/dist/cli.js`; omp is a
-# standalone binary. Both are wrapped so the harness can point at them
-# uniformly.
-AGENT_BIN="$SANDBOX/bin/$AGENT_TERMINAL_AGENT"
-if [[ $AGENT_TERMINAL_AGENT == pi ]]; then
-  cat >"$AGENT_BIN" <<EOF
+# pi runs as `bun <package>/dist/cli.js`; wrap it so the harness has one path.
+AGENT_BIN="$SANDBOX/bin/pi"
+cat >"$AGENT_BIN" <<EOF
 #!/usr/bin/env bash
 exec bun "$PI_DIR/dist/cli.js" "\$@"
 EOF
-else
-  cat >"$AGENT_BIN" <<EOF
-#!/usr/bin/env bash
-exec "$OMP_BIN" "\$@"
-EOF
-fi
 chmod 0755 "$AGENT_BIN"
 
 # The provider extension registers the fixture provider (one file per
@@ -294,26 +264,17 @@ PROVIDER_A="$SANDBOX/provider-a.ts"
 PROVIDER_B="$SANDBOX/provider-b.ts"
 
 # The two-session prompt drives the same lifecycle as e2e-pi.sh's prompt,
-# with the hold step inserted between start and the first read. The probe
-# steps differ per agent (pi: PI_SESSION_ID; omp: injected
-# AGENT_TERMINAL_SCOPE plus an explicit override probe), so the prompt's step
-# count and numbering shift accordingly: 10 lifecycle steps are written once
-# with __STEP_N__ markers and renumbered below.
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  TOTAL_STEPS=12
-  LIFECYCLE_OFFSET=2
-  # Scope shell reference for the start-command pane marker (scope-marker:):
-  # the fixture exact-matches the start command, and the marker must expand
-  # to the scope of the session that spawned the pane. omp exposes it via the
-  # extension-injected AGENT_TERMINAL_SCOPE; pi via PI_SESSION_ID. The
-  # single-quoted value is substituted verbatim into the prompt text (the
-  # agent types it into the Bash tool, the job shell expands it).
-  SCOPE_MARKER_ENV='$AGENT_TERMINAL_SCOPE'
-else
-  TOTAL_STEPS=11
-  LIFECYCLE_OFFSET=1
-  SCOPE_MARKER_ENV='$PI_SESSION_ID'
-fi
+# with the hold step inserted between start and the first read. It starts with
+# one scope probe, then 10 lifecycle steps written once with __STEP_N__ markers
+# and renumbered below.
+TOTAL_STEPS=11
+LIFECYCLE_OFFSET=1
+# Scope shell reference for the start-command pane marker (scope-marker:): the
+# fixture exact-matches the start command, and the marker must expand to the
+# scope of the session that spawned the pane. The single-quoted value is
+# substituted verbatim into the prompt text (the agent types it into the Bash
+# tool, the job shell expands it).
+SCOPE_MARKER_ENV='$PI_SESSION_ID'
 
 readonly PROMPT_FILE="$SANDBOX/prompt.md"
 {
@@ -329,16 +290,9 @@ Execution contract:
 
 Perform this exact __TOTAL_STEPS__-step lifecycle using the job name __JOB_NAME__:
 PROMPT_HEAD
-  if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-    cat <<'PROMPT_PROBE'
-1. Bash: run `printenv AGENT_TERMINAL_SCOPE` and confirm it prints the current omp session id (non-empty). This verifies the extension injected the per-session scope into the Bash tool environment.
-2. Bash: run `AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE` and confirm it prints the literal text shared. This verifies an explicit scope override wins over the injected default.
-PROMPT_PROBE
-  else
-    cat <<'PROMPT_PROBE'
+  cat <<'PROMPT_PROBE'
 1. Bash: run `printenv PI_SESSION_ID` and confirm it prints the current pi session id (non-empty). This verifies the per-session scope is available to the Bash tool.
 PROMPT_PROBE
-  fi
   cat <<'PROMPT_LIFECYCLE'
 __STEP_1__. Bash: `agent-terminal list` and verify the JSON response has status ok and an empty jobs array.
 __STEP_2__. Bash: start the interactive job with `agent-terminal start __JOB_NAME__ -- /bin/bash -lc 'printf "prompt-ready\n"; printf "scope-marker:%s\n" "__SCOPE_MARKER_ENV__"; IFS= read -r first; printf "first:%s\n" "$first"; IFS= read -r second; printf "second:%s\n" "$second"'`.
@@ -364,9 +318,8 @@ sed -i "${sed_exprs[@]}" "$PROMPT_FILE"
 # Start both fixture servers on ephemeral ports (--port 0): the kernel
 # assigns each a distinct port atomically — no free-port probing, no TOCTOU
 # race — and each fixture reports its actual port as FIXTURE_PORT=<digits>
-# on stdout. They read AGENT_TERMINAL_AGENT and AGENT_TERMINAL_JOB_NAME at
-# process start to select the probe steps and the exact job name.
-export AGENT_TERMINAL_AGENT
+# on stdout. They read AGENT_TERMINAL_JOB_NAME at process start for the exact
+# job name.
 export AGENT_TERMINAL_JOB_NAME="$JOB_NAME"
 export AGENT_TERMINAL_FIXTURE_HOLD=1
 export AGENT_TERMINAL_FIXTURE_HOLD_SECS="$FIXTURE_HOLD_SECS"
@@ -429,25 +382,16 @@ wait_for_fixture "$FIXTURE_PORT_A" "$FIXTURE_A_PID" a
 wait_for_fixture "$FIXTURE_PORT_B" "$FIXTURE_B_PID" b
 
 # Launch both agents in parallel. Each runs in a pristine env -i sandbox whose
-# AGENT_TERMINAL_STATE/HOME are shared by its Bash children (both agents
-# export the launch env to the Bash tool; verified empirically for omp and pi
-# alike). The agents are launched from the workdir so the Bash tool's default
-# cwd is the workdir. AGENT_TERMINAL_SCOPE is deliberately NOT set: the scope
-# must come from the agent's own session id (pi's native PI_SESSION_ID, omp's
-# injected AGENT_TERMINAL_SCOPE).
-AGENT_FLAGS=""
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  AGENT_FLAGS="--auto-approve --no-pty"
-fi
-
+# AGENT_TERMINAL_STATE/HOME are shared by its Bash children (pi exports the
+# launch env to the Bash tool). The agents are launched from the workdir so
+# the Bash tool's default cwd is the workdir. AGENT_TERMINAL_SCOPE is
+# deliberately NOT set: the scope must come from pi's native PI_SESSION_ID.
 launch_agent() {
   local id="$1"
   local provider_ext="$2"
   local transcript="$ARTIFACT_DIR/session-$id.jsonl"
   (
     cd "$WORKDIR"
-    # AGENT_FLAGS is intentionally word-split so omp can add its native flags.
-    # shellcheck disable=SC2086
     exec env -i \
       HOME="$SANDBOX/home" \
       USER="$(id -un)" \
@@ -468,7 +412,7 @@ launch_agent() {
       -p --mode json --model local-fixture/fixture \
       -e "$EXTENSION_PATH" -e "$provider_ext" \
       --no-skills --no-context-files --no-lsp --no-session --thinking off \
-      --cwd "$WORKDIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")"
+      --cwd "$WORKDIR" "$(cat "$PROMPT_FILE")"
   ) >"$transcript" 2>"$ARTIFACT_DIR/session-$id.stderr.log" &
   echo "$!" >"$ARTIFACT_DIR/session-$id.pid"
 }
@@ -681,32 +625,27 @@ done
 # grepped: Bash tool calls and their results are matched in the order they
 # STARTED (tool_execution_start order — the fixture emits one bash call per
 # step, so start order is the lifecycle order), the probe prefix and the full
-# pi/omp lifecycle must appear in order (read steps may retry with the same
+# pi lifecycle must appear in order (read steps may retry with the same
 # command, exactly like the fixture), E2E_SUCCESS must be a standalone line
 # in the final assistant message AFTER the last tool result, and
 # E2E_FIXTURE_ERROR anywhere fails the run.
 phase "verifying transcripts"
 for id in a b; do
   transcript="$ARTIFACT_DIR/session-$id.jsonl"
-  if ! JSON_FILE="$transcript" AGENT="$AGENT_TERMINAL_AGENT" JOB_NAME="$JOB_NAME" HOLD_SECS="$FIXTURE_HOLD_SECS" bun -e '
+  if ! JSON_FILE="$transcript" JOB_NAME="$JOB_NAME" HOLD_SECS="$FIXTURE_HOLD_SECS" bun -e '
     const lines = (await Bun.file(process.env.JSON_FILE).text()).split("\n").filter(Boolean)
-    const agent = process.env.AGENT
     const job = process.env.JOB_NAME
     // parseInt matches the fixture HOLD_SECS normalization exactly.
     const hold = String(parseInt(process.env.HOLD_SECS, 10))
-    if (agent !== "pi" && agent !== "omp") throw new Error(`unexpected agent: ${agent}`)
     if (job === "" || Number.isNaN(parseInt(process.env.HOLD_SECS, 10))) {
       throw new Error("missing JOB_NAME/HOLD_SECS")
     }
 
-    // The pane marker env var, matching the SCOPE_MARKER_ENV used by
-    // e2e-fixture.ts and the scopeMarkerEnv of e2e-verify.ts byte-for-byte.
-    const scopeEnv = agent === "omp" ? "AGENT_TERMINAL_SCOPE" : "PI_SESSION_ID"
+    // The pane marker env var, matching SCOPE_MARKER_ENV in e2e-fixture.ts
+    // and the scope marker in e2e-verify.ts byte-for-byte.
+    const scopeEnv = "PI_SESSION_ID"
     const start = `agent-terminal start ${job} -- /bin/bash -lc '"'"'printf "prompt-ready\\n"; printf "scope-marker:%s\\n" "$${scopeEnv}"; IFS= read -r first; printf "first:%s\\n" "$first"; IFS= read -r second; printf "second:%s\\n" "$second"'"'"'`
-    const probes =
-      agent === "omp"
-        ? ["printenv AGENT_TERMINAL_SCOPE", "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE"]
-        : ["printenv PI_SESSION_ID"]
+    const probes = ["printenv PI_SESSION_ID"]
     // The expected lifecycle, in order, with the same per-step checks as the
     // fixture and e2e-verify.ts. Only steps whose check may legitimately fail
     // transiently (the three reads: the pane renders asynchronously) retry
@@ -765,12 +704,8 @@ for id in a b; do
       }
       return ""
     }
-    // omp bash appends "\n\nWall time: X seconds\n\nCommand exited with code N".
-    // Strip the suffix BEFORE trimming, exactly like the fixture and the
-    // verifier: a probe that printed nothing but the Wall-time trailer must
-    // count as empty.
     function stripped(text) {
-      return text.replace(/\n\nWall time:.*$/s, "").trim()
+      return text.trim()
     }
     // Extract the first JSON object from the output, requiring status ok.
     function parseOk(text) {

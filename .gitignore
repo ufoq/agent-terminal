@@ -1,12 +1,4 @@
 /target/
-/opencode/node_modules/
-/opencode/.tsbuildinfo
-/opencode/coverage/
-/opencode/npm/dist/
-/opencode/npm/packages/*/dist/
-/opencode/npm/packages/*/bin/
-/opencode/npm/packages/*/skills/
-/opencode/npm/packages/*/*.tgz
 /pi/node_modules/
 /pi/.tsbuildinfo
 /pi/coverage/
@@ -15,14 +7,6 @@
 /pi/npm/packages/*/bin/
 /pi/npm/packages/*/skills/
 /pi/npm/packages/*/*.tgz
-/omp/node_modules/
-/omp/.tsbuildinfo
-/omp/coverage/
-/omp/npm/dist/
-/omp/npm/packages/*/dist/
-/omp/npm/packages/*/bin/
-/omp/npm/packages/*/skills/
-/omp/npm/packages/*/*.tgz
 /.omo/
 /.*
 !.github/

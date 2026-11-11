@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Skill-discovery e2e gate for agent-terminal through the pi and omp coding
-# agents.
+# Skill-discovery e2e gate for agent-terminal through pi.
 #
 # Starts a local OpenAI-compatible fixture server in skill-probe mode
 # (AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1) and runs the agent under test with a
@@ -13,11 +12,10 @@
 #   - not found -> replies SKILL_PROBE_FAILED and stops the session.
 # The gate passes only when the transcript contains SKILL_PROBE_OK.
 #
-# This proves the skill packaging contract for each agent: the bundle package
-# ROOT (pi: npm/packages/pi-agent-terminal-bundle-zellij; omp:
-# npm/packages/omp-agent-terminal-bundle-zellij) ships the skill. Pi discovers
-# it through the `pi.skills` manifest entry; omp's native `omp-plugins` provider
-# discovers the shipped `skills/` sibling. No extension loader registers it.
+# This proves the skill packaging contract: the bundle package ROOT
+# (npm/packages/pi-agent-terminal-bundle-zellij) ships the skill, and pi
+# discovers it through the `pi.skills` manifest entry. No extension loader
+# registers it.
 # Loading the built dist/index.js file directly is extension-only and must NOT
 # expose the skill.
 #
@@ -25,17 +23,15 @@
 # model, exactly like scripts/e2e-pi-local.sh.
 #
 # Usage:
-#   AGENT_TERMINAL_AGENT=pi bash scripts/e2e-skill-discovery.sh
-#   AGENT_TERMINAL_AGENT=omp bash scripts/e2e-skill-discovery.sh
+#   bash scripts/e2e-skill-discovery.sh
 #
 # Environment overrides:
-#   AGENT_TERMINAL_AGENT           - agent under test: pi (default) or omp
 #   AGENT_TERMINAL_PI_DIR          - pi package dir (default: ~/.local/pi/pkg)
 #   AGENT_TERMINAL_FIXTURE_PORT    - port for the fixture server (default: auto — the fixture
 #                                  binds an ephemeral port and reports it; no free-port probing)
 #   AGENT_TERMINAL_CLEANUP         - delete temp dirs on exit (default: 1)
 #   AGENT_TERMINAL_SKIP_PREFLIGHT  - skip build preflight (default: 0)
-#   AGENT_TERMINAL_PROMPT_E2E_TIMEOUT - agent run timeout (default: 300)
+#   AGENT_TERMINAL_PROMPT_E2E_TIMEOUT - pi run timeout (default: 300)
 
 set -Eeuo pipefail
 
@@ -45,14 +41,8 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly PI_ROOT="$REPO_ROOT/pi"
 readonly FIXTURE_SCRIPT="$PI_ROOT/scripts/e2e-fixture.ts"
 
-AGENT_TERMINAL_AGENT="${AGENT_TERMINAL_AGENT:-pi}"
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  readonly WS_ROOT="$REPO_ROOT/omp"
-  readonly BUNDLE_PACKAGE="$WS_ROOT/npm/packages/omp-agent-terminal-bundle-zellij"
-else
-  readonly WS_ROOT="$PI_ROOT"
-  readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
-fi
+readonly WS_ROOT="$PI_ROOT"
+readonly BUNDLE_PACKAGE="$PI_ROOT/npm/packages/pi-agent-terminal-bundle-zellij"
 
 CLEANUP="${AGENT_TERMINAL_CLEANUP:-1}"
 SKIP_PREFLIGHT="${AGENT_TERMINAL_SKIP_PREFLIGHT:-0}"
@@ -108,35 +98,17 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   fail "missing required tools: ${missing[*]}"
 fi
 
-# Resolve the agent binary (pi package or omp binary) and build a sandbox
-# wrapper for it. pi is not a standalone binary: it runs as
-# `bun <package>/dist/cli.js`, so the wrapper execs bun with the package entry.
-# omp is a standalone binary and the wrapper just execs it.
-case "$AGENT_TERMINAL_AGENT" in
-  pi)
-    PI_DIR="${AGENT_TERMINAL_PI_DIR:-$HOME/.local/pi/pkg}"
-    if [[ ! -f $PI_DIR/dist/cli.js ]]; then
-      fail "pi package not found at $PI_DIR (set AGENT_TERMINAL_PI_DIR)"
-    fi
-    ;;
-  omp)
-    OMP_BIN="$(command -v omp 2>/dev/null || true)"
-    if [[ -z $OMP_BIN && -x /usr/local/bin/omp ]]; then
-      OMP_BIN=/usr/local/bin/omp
-    fi
-    if [[ -z $OMP_BIN ]]; then
-      fail "omp binary not found on PATH or at /usr/local/bin/omp"
-    fi
-    ;;
-  *)
-    fail "AGENT_TERMINAL_AGENT must be pi or omp, got: $AGENT_TERMINAL_AGENT"
-    ;;
-esac
+# Resolve the pi package and build a sandbox wrapper. pi is not a standalone
+# binary: it runs as `bun <package>/dist/cli.js`.
+PI_DIR="${AGENT_TERMINAL_PI_DIR:-$HOME/.local/pi/pkg}"
+if [[ ! -f $PI_DIR/dist/cli.js ]]; then
+  fail "pi package not found at $PI_DIR (set AGENT_TERMINAL_PI_DIR)"
+fi
 
 # Build the local bundle-zellij npm package (Rust musl binary + extension +
-# skill + pinned Zellij) for the agent under test.
+# skill + pinned Zellij).
 if [[ $SKIP_PREFLIGHT != 1 ]]; then
-  printf 'Building local %s npm package ...\n' "$AGENT_TERMINAL_AGENT"
+  printf 'Building local pi npm package ...\n'
   cd "$WS_ROOT"
   if ! bun run build; then
     fail "bun run build failed"
@@ -148,11 +120,10 @@ if [[ ! -f $EXTENSION_PATH ]]; then
   fail "extension dist missing after build: $EXTENSION_PATH"
 fi
 
-# The skill discovery contract requires the bundle package ROOT for both agents:
-# pi reads its declared `pi.skills` directory, while omp's native `omp-plugins`
-# provider discovers the shipped `skills/` sibling. The built dist/index.js file
-# is extension-only and does not expose the skill; it is checked above purely as
-# a build-artifact assertion.
+# The skill discovery contract requires the bundle package ROOT: pi reads its
+# declared `pi.skills` directory. The built dist/index.js file is extension-only
+# and does not expose the skill; it is checked above purely as a build-artifact
+# assertion.
 EXTENSION_ARG="$BUNDLE_PACKAGE"
 
 # Prepare isolated run directory: sandbox bin dir for the agent wrapper, the
@@ -161,18 +132,11 @@ RUN_DIR="$(mktemp -d /tmp/e2e-skill-discovery.XXXXXX)"
 readonly RUN_DIR
 mkdir -p "$RUN_DIR/bin"
 
-AGENT_BIN="$RUN_DIR/bin/$AGENT_TERMINAL_AGENT"
-if [[ $AGENT_TERMINAL_AGENT == pi ]]; then
-  cat >"$AGENT_BIN" <<EOF
+AGENT_BIN="$RUN_DIR/bin/pi"
+cat >"$AGENT_BIN" <<EOF
 #!/usr/bin/env bash
 exec bun "$PI_DIR/dist/cli.js" "\$@"
 EOF
-else
-  cat >"$AGENT_BIN" <<EOF
-#!/usr/bin/env bash
-exec "$OMP_BIN" "\$@"
-EOF
-fi
 chmod 0755 "$AGENT_BIN"
 
 # Allocate the fixture port atomically: with --port 0 the kernel binds an
@@ -187,11 +151,9 @@ else
   FIXTURE_ARGS+=(--port "$FIXTURE_PORT")
 fi
 
-# The fixture reads these at process start: AGENT_TERMINAL_AGENT selects the
-# probe steps, AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1 switches the fixture into
-# skill-probe mode (it asserts the skill description appears in the FIRST
-# provider request and replies SKILL_PROBE_OK / SKILL_PROBE_FAILED).
-export AGENT_TERMINAL_AGENT
+# The fixture reads these at process start: AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1
+# switches it into skill-probe mode (it asserts the skill description appears in
+# the FIRST provider request and replies SKILL_PROBE_OK / SKILL_PROBE_FAILED).
 export AGENT_TERMINAL_JOB_NAME="${AGENT_TERMINAL_JOB_NAME:-}"
 export AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1
 
@@ -291,16 +253,10 @@ install -d -m 0700 \
 # /opt/bun/bin first (the host bun location), then the host PATH.
 ISOLATED_PATH="/opt/bun/bin:$PATH"
 
-# Run the agent with skills ENABLED (no --no-skills) and both extensions: the
+# Run pi with skills ENABLED (no --no-skills) and both extensions: the
 # agent-terminal bundle package ROOT (static skill discovery) and the fixture
-# provider extension. AGENT_FLAGS is intentionally word-split so omp can add
-# its native flags.
-AGENT_FLAGS=""
-if [[ $AGENT_TERMINAL_AGENT == omp ]]; then
-  AGENT_FLAGS="--auto-approve --no-pty"
-fi
-
-printf 'Running %s agent with skills enabled ...\n' "$AGENT_TERMINAL_AGENT"
+# provider extension.
+printf 'Running pi with skills enabled ...\n'
 # Launch the host from RUN_DIR (a subshell that cds first, the same pattern the
 # two-session harness uses): pi's --cwd flag is compatibility-only and does not
 # chdir, so without the cd the host would start with its cwd at WS_ROOT and a
@@ -308,8 +264,6 @@ printf 'Running %s agent with skills enabled ...\n' "$AGENT_TERMINAL_AGENT"
 # absolute (derived from REPO_ROOT before any cd), so the cd cannot affect them.
 (
   cd "$RUN_DIR"
-  # AGENT_FLAGS is intentionally word-split so omp can add its native flags.
-  # shellcheck disable=SC2086
   exec env -i \
     HOME="$RUN_DIR/home" \
     USER="$(id -un)" \
@@ -328,7 +282,7 @@ printf 'Running %s agent with skills enabled ...\n' "$AGENT_TERMINAL_AGENT"
     -p --mode json --model local-fixture/fixture \
     -e "$EXTENSION_ARG" -e "$PROVIDER_EXTENSION" \
     --no-context-files --no-lsp --no-session --thinking off \
-    --cwd "$RUN_DIR" $AGENT_FLAGS "$(cat "$PROMPT_FILE")"
+    --cwd "$RUN_DIR" "$(cat "$PROMPT_FILE")"
 ) >"$TRANSCRIPT" 2>"$RUN_DIR/stderr.log" &
 AGENT_PID=$!
 
@@ -352,4 +306,4 @@ if ! grep -q 'SKILL_PROBE_OK' "$TRANSCRIPT"; then
   fail "skill probe never completed: transcript lacks SKILL_PROBE_OK (see $TRANSCRIPT)"
 fi
 
-printf 'Skill discovery e2e passed (%s).\n' "$AGENT_TERMINAL_AGENT"
+printf 'Skill discovery e2e passed (pi).\n'

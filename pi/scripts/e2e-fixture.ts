@@ -5,11 +5,6 @@
 // whose marker has not rendered yet are retried (bounded).
 //
 // Modes (env):
-//   AGENT_TERMINAL_AGENT           pi (default) or omp — selects the scope
-//                                  probe steps (pi: `printenv PI_SESSION_ID`;
-//                                  omp: `printenv AGENT_TERMINAL_SCOPE` plus
-//                                  an explicit `AGENT_TERMINAL_SCOPE=shared`
-//                                  override probe).
 //   AGENT_TERMINAL_JOB_NAME        exact job name (replaces the legacy
 //                                  /prompt-smoke-\d+/ extraction).
 //   AGENT_TERMINAL_FIXTURE_HOLD=1  insert a sleep step right after start so
@@ -61,15 +56,11 @@ type HistoryMessage = {
   tool_calls?: ToolCall[]
 } & ToolResult
 
-const AGENT = process.env["AGENT_TERMINAL_AGENT"] === "omp" ? "omp" : "pi"
-
 // Scope shell reference printed by the start command's shell as a pane
 // marker ("scope-marker:<scope>"): the two-session isolation gate starts two
 // identically named jobs and tells the panes apart by this marker, so the
-// marker must expand to the scope of the session that spawned the pane (the
-// agent-terminal CLI inherits PI_SESSION_ID / AGENT_TERMINAL_SCOPE into the
-// job shell).
-const SCOPE_MARKER_ENV = AGENT === "omp" ? "$AGENT_TERMINAL_SCOPE" : "$PI_SESSION_ID"
+// marker must expand to the session scope inherited by the CLI and job shell.
+const SCOPE_MARKER_ENV = "$PI_SESSION_ID"
 
 // Exact job name override: replaces the legacy /prompt-smoke-\d+/ extraction
 // from the prompt text so the fixture can drive arbitrary job names (e.g.
@@ -244,32 +235,16 @@ const stepListFinal: Step = {
   },
 }
 
-// The probe steps differ per agent: pi exposes the scope as the native
-// PI_SESSION_ID env var; omp receives an AGENT_TERMINAL_SCOPE injected into
-// the Bash tool env input, plus an explicit override probe proving an
-// explicit scope wins. The verifier asserts the exact printed values.
+// The probe step prints pi's native PI_SESSION_ID. The verifier asserts the
+// exact printed value.
 function buildSteps(): Step[] {
-  const steps: Step[] = []
-  if (AGENT === "omp") {
-    steps.push(
-      {
-        probe: true,
-        cmd: (_job: string) => "printenv AGENT_TERMINAL_SCOPE",
-        onResult: "scope-probe",
-      },
-      {
-        probe: true,
-        cmd: (_job: string) => "AGENT_TERMINAL_SCOPE=shared printenv AGENT_TERMINAL_SCOPE",
-        onResult: "scope-probe-override",
-      },
-    )
-  } else {
-    steps.push({
+  const steps: Step[] = [
+    {
       probe: true,
       cmd: (_job: string) => "printenv PI_SESSION_ID",
       onResult: "scope-probe",
-    })
-  }
+    },
+  ]
   steps.push(stepList, stepStart)
   if (HOLD) {
     steps.push({
@@ -330,22 +305,12 @@ function isFlatResult(value: unknown): value is { status: string } & Record<stri
 
 function parseResultBody(content: string): ({ status: string } & Record<string, unknown>) | null {
   const trimmed = content.trim()
-  // omp's bash tool appends "\n\nWall time: X seconds\n\nCommand exited with code N"
-  // after the actual output. Extract the first JSON object from the text.
-  const jsonStart = trimmed.indexOf("{")
-  const jsonEnd = trimmed.indexOf("}", jsonStart >= 0 ? jsonStart : 0)
-  if (jsonStart < 0 || jsonEnd < 0) {
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return isFlatResult(parsed) ? parsed : null
+  } catch {
     return null
   }
-  // Try parsing progressively longer substrings to handle nested JSON objects.
-  for (let end = jsonEnd + 1; end <= trimmed.length; end++) {
-    const candidate = trimmed.slice(jsonStart, end)
-    try {
-      const parsed: unknown = JSON.parse(candidate)
-      return isFlatResult(parsed) ? parsed : null
-    } catch {}
-  }
-  return null
 }
 
 // Parse a tool_call arguments JSON blob and narrow it to the bash command
@@ -383,12 +348,7 @@ function validateStep(stepIdx: number, job: string, content: string | null): Ste
   }
   // The scope probes' results are raw text (the printed value), not JSON.
   if (step.probe === true) {
-    // omp's bash tool appends "\n\nWall time: X seconds..." (plus a
-    // "Command exited with code N" line) after the actual command output, so
-    // strip the same suffix e2e-verify.ts strips. The probe advances on any
-    // non-empty printed value; exact-value comparison belongs exclusively to
-    // e2e-verify.ts.
-    const printed = content.replace(/\n\nWall time:.*$/s, "").trim()
+    const printed = content.trim()
     if (printed === "") {
       return {
         ok: false,
