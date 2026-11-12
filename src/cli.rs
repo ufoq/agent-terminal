@@ -46,10 +46,18 @@ pub enum Command {
         #[arg(last = true, required = true, num_args = 1.., value_name = "COMMAND")]
         command: Vec<String>,
     },
-    /// Read the current screen of a job.
+    /// Read a bounded preview of a job's retained scrollback.
+    ///
+    /// The preview is capped at 200 lines or 32 KiB; `truncated` describes only it. With
+    /// `--save PATH`, also write the complete ANSI-stripped snapshot and return `saved` as
+    /// its absolute path. Relative paths use the invocation directory. The destination must
+    /// name a file whose parent exists; it is atomically replaced with a 0600 file.
     Read {
         /// Job name.
         job: JobName,
+        /// Destination path for the full retained-scrollback snapshot.
+        #[arg(long, value_name = "PATH")]
+        save: Option<PathBuf>,
     },
     /// Send text to a job and submit it with Enter.
     Send {
@@ -99,7 +107,7 @@ pub fn run(cli: Cli) -> Result<CommandData, Error> {
     let command = match cli.command {
         Command::List => CliCommand::List,
         Command::Start { job, cwd, command } => CliCommand::Start { job, cwd, command },
-        Command::Read { job } => CliCommand::Read { job },
+        Command::Read { job, save } => CliCommand::Read { job, save },
         Command::Send { job, text } => CliCommand::Send {
             job,
             text: text.join(" "),
@@ -124,6 +132,7 @@ pub enum CliCommand {
     },
     Read {
         job: JobName,
+        save: Option<PathBuf>,
     },
     Send {
         job: JobName,

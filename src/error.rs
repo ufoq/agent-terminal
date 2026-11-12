@@ -36,6 +36,13 @@ pub enum Error {
         source: io::Error,
         cause: String,
     },
+    #[error("could not save screen to {path}: {cause}")]
+    SaveFailed {
+        path: String,
+        #[source]
+        source: io::Error,
+        cause: String,
+    },
 }
 
 impl Error {
@@ -59,6 +66,19 @@ impl Error {
     }
 
     #[must_use]
+    pub fn save_failed(path: impl AsRef<std::path::Path>, source: io::Error) -> Self {
+        let cause = source.raw_os_error().map_or_else(
+            || source.kind().to_string(),
+            |code| format!("{} (os error {code})", source.kind()),
+        );
+        Self::SaveFailed {
+            path: path.as_ref().display().to_string(),
+            source,
+            cause,
+        }
+    }
+
+    #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::InvalidInput { .. } => "invalid_input",
@@ -69,7 +89,7 @@ impl Error {
             Self::LockBusy => "lock_busy",
             Self::ZellijNotFound { .. } => "zellij_not_found",
             Self::ZellijFailed { .. } | Self::ZellijTimeout => "zellij_failed",
-            Self::StateIo { .. } => "state_io",
+            Self::StateIo { .. } | Self::SaveFailed { .. } => "state_io",
         }
     }
 
@@ -83,7 +103,8 @@ impl Error {
             | Self::ZellijFailed { .. }
             | Self::ZellijTimeout
             | Self::SessionLost
-            | Self::StateIo { .. } => 2,
+            | Self::StateIo { .. }
+            | Self::SaveFailed { .. } => 2,
         }
     }
 

@@ -48,6 +48,12 @@ pub struct ReadData {
     pub job: JobName,
     pub screen: String,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_lines: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]

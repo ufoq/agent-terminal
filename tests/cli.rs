@@ -6,6 +6,7 @@ use std::{
     os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -25,7 +26,23 @@ fn run(state: &Path, project: &Path, args: &[&str]) -> Output {
         .arg("--project")
         .arg(project)
         .env("ZELLIJ_SOCKET_DIR", state.join("sockets"))
+        .env("AGENT_TERMINAL_ZELLIJ", zellij_bin())
         .env("RUST_LOG", "warn")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn run_in(state: &Path, project: &Path, cwd: &Path, args: &[&str]) -> Output {
+    Command::new(bin())
+        .arg("--state-dir")
+        .arg(state)
+        .arg("--project")
+        .arg(project)
+        .env("ZELLIJ_SOCKET_DIR", state.join("sockets"))
+        .env("AGENT_TERMINAL_ZELLIJ", zellij_bin())
+        .env("RUST_LOG", "warn")
+        .current_dir(cwd)
         .args(args)
         .output()
         .unwrap()
@@ -44,6 +61,7 @@ fn run_env(
         .arg("--project")
         .arg(project)
         .env("ZELLIJ_SOCKET_DIR", state.join("sockets"))
+        .env("AGENT_TERMINAL_ZELLIJ", zellij_bin())
         .env("RUST_LOG", "warn")
         .args(args);
     for (key, value) in envs {
@@ -53,13 +71,35 @@ fn run_env(
 }
 
 fn zellij_bin() -> PathBuf {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("command -v zellij")
-        .output()
-        .expect("sh");
-    assert!(output.status.success(), "zellij is not on PATH");
-    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    static ZELLIJ: OnceLock<PathBuf> = OnceLock::new();
+    ZELLIJ
+        .get_or_init(|| {
+            let path = std::env::var("AGENT_TERMINAL_TEST_ZELLIJ").map_or_else(
+                |_| {
+                    let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("pi/npm/packages/pi-agent-terminal-bundle-zellij/bin/zellij/zellij");
+                    assert!(
+                        bundled.is_file(),
+                        "bundled Zellij 0.45.1 is missing; run `cd pi && bun run build` or set \
+                         AGENT_TERMINAL_TEST_ZELLIJ"
+                    );
+                    bundled
+                },
+                PathBuf::from,
+            );
+            let output = Command::new(&path)
+                .arg("--version")
+                .output()
+                .unwrap_or_else(|error| panic!("cannot run {}: {error}", path.display()));
+            let version = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && version.trim() == "zellij 0.45.1",
+                "tests require Zellij 0.45.1, got {version:?} from {}",
+                path.display()
+            );
+            path
+        })
+        .clone()
 }
 
 fn start_job(state: &Path, project: &Path, job: &str) {
@@ -233,19 +273,8 @@ fn wait_for_job(state: &Path, project: &Path, job: &str, present: bool) {
     panic!("job {job} did not reach present={present}");
 }
 
-fn zellij_available() -> bool {
-    Command::new("zellij")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
 #[test]
 fn global_job_lifecycle_and_cleanup() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -330,6 +359,241 @@ fn global_job_lifecycle_and_cleanup() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn read_save_writes_full_retained_scrollback_and_keeps_preview_bounded() {
+    let state = TempDir::new().unwrap();
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir(state.path().join("sockets")).unwrap();
+    let state_path = state.path();
+    let project_path = project.path();
+
+    let marker = project_path.join("job.done");
+    let command = format!(
+        "i=1; while [ $i -le 700 ]; do printf 'line%03d %s\\n' \"$i\" 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; i=$((i+1)); done; printf '\\033[31mRED-MARKER\\033[0m\\n'; echo DONE; touch '{}'; exec sleep 60",
+        marker.display()
+    );
+    let start = run(
+        state_path,
+        project_path,
+        &["--global", "start", "big", "--", "sh", "-c", &command],
+    );
+    assert!(
+        start.status.success(),
+        "{}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    wait_for_job(state_path, project_path, "big", true);
+
+    let save = project_path.join("full-screen.log");
+    fs::write(&save, "stale").unwrap();
+    fs::set_permissions(&save, fs::Permissions::from_mode(0o644)).unwrap();
+    let save_arg = save.to_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "job did not finish");
+        thread::sleep(Duration::from_millis(50));
+    }
+    loop {
+        let probe = run(state_path, project_path, &["--global", "read", "big"]);
+        if json(&probe)["data"]["screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("DONE"))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "job output did not settle");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let read = run(
+        state_path,
+        project_path,
+        &["--global", "read", "big", "--save", save_arg],
+    );
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let value = json(&read);
+    let expected = fs::canonicalize(project_path)
+        .unwrap()
+        .join("full-screen.log");
+    assert_eq!(value["data"]["saved"], expected.to_str().unwrap());
+    assert_eq!(value["data"]["truncated"], true);
+
+    let preview = value["data"]["screen"].as_str().unwrap();
+    assert!(preview.contains("DONE"), "preview: {preview}");
+    assert!(preview.contains("RED-MARKER"), "preview: {preview}");
+    assert!(!preview.contains('\u{1b}'), "preview contains ANSI");
+    assert!(preview.lines().count() <= 200);
+    assert!(preview.len() <= 32 * 1024);
+
+    let saved = fs::read_to_string(&save).unwrap();
+    let lines: Vec<&str> = saved.lines().collect();
+    assert!(saved.len() > 32 * 1024, "saved bytes: {}", saved.len());
+    assert!(lines.len() > 200, "saved only {} lines", lines.len());
+    assert!(
+        lines
+            .first()
+            .is_some_and(|line| line.starts_with("line001 ")),
+        "first line: {:?}",
+        lines.first()
+    );
+    assert!(saved.contains("line700 "));
+    assert_eq!(
+        lines.get(lines.len() - 2),
+        Some(&"RED-MARKER"),
+        "lines={} first={:?} penultimate={:?} last={:?} tail={:?}",
+        lines.len(),
+        lines.first(),
+        lines.get(lines.len() - 2),
+        lines.last(),
+        &lines[lines.len().saturating_sub(8)..]
+    );
+    assert_eq!(lines.last(), Some(&"DONE"));
+    assert!(!saved.contains('\u{1b}'), "saved file contains ANSI");
+    assert_eq!(
+        value["data"]["saved_bytes"],
+        fs::metadata(&save).unwrap().len()
+    );
+    assert_eq!(value["data"]["saved_lines"], lines.len());
+    let mode = fs::metadata(&save).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let plain = run(state_path, project_path, &["--global", "read", "big"]);
+    assert!(plain.status.success());
+    let plain_value = json(&plain);
+    assert!(plain_value["data"].get("saved").is_none());
+    assert!(plain_value["data"].get("saved_bytes").is_none());
+    assert!(plain_value["data"].get("saved_lines").is_none());
+    assert!(plain_value["data"]["screen"].as_str().unwrap().len() <= 32 * 1024);
+
+    let stop = run(state_path, project_path, &["--global", "stop", "big"]);
+    assert!(stop.status.success());
+    wait_for_job(state_path, project_path, "big", false);
+}
+
+#[test]
+fn read_save_failure_does_not_replace_or_create_destination() {
+    let state = TempDir::new().unwrap();
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir(state.path().join("sockets")).unwrap();
+    let state_path = state.path();
+    let project_path = project.path();
+    start_job(state_path, project_path, "echoer");
+
+    let destination = project_path.join("saved.log");
+    fs::write(&destination, "old").unwrap();
+    let destination_arg = destination.to_str().unwrap();
+    let missing = run(
+        state_path,
+        project_path,
+        &["--global", "read", "missing", "--save", destination_arg],
+    );
+    assert_eq!(json(&missing)["code"], "job_not_found");
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "old");
+
+    let missing_parent = project_path.join("missing").join("snap.log");
+    let missing_parent_arg = missing_parent.to_str().unwrap();
+    let failed = run(
+        state_path,
+        project_path,
+        &["--global", "read", "echoer", "--save", missing_parent_arg],
+    );
+    assert_eq!(failed.status.code(), Some(2));
+    let value = json(&failed);
+    assert_eq!(value["code"], "state_io");
+    let message = value["message"].as_str().unwrap();
+    assert!(message.contains("snap.log"), "message: {message}");
+    assert!(!message.contains(state_path.to_str().unwrap()));
+    assert!(!missing_parent.parent().unwrap().exists());
+
+    let stop = run(state_path, project_path, &["--global", "stop", "echoer"]);
+    assert!(stop.status.success());
+    wait_for_job(state_path, project_path, "echoer", false);
+}
+
+#[test]
+fn read_save_relative_path_uses_invocation_directory() {
+    let state = TempDir::new().unwrap();
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir(state.path().join("sockets")).unwrap();
+    let invocation = TempDir::new().unwrap();
+    let state_path = state.path();
+    let project_path = project.path();
+    start_job(state_path, project_path, "echoer");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = run(state_path, project_path, &["--global", "read", "echoer"]);
+        if json(&output)["data"]["screen"]
+            .as_str()
+            .is_some_and(|screen| screen.contains("ready"))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "job did not produce output");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let read = run_in(
+        state_path,
+        project_path,
+        invocation.path(),
+        &["--global", "read", "echoer", "--save", "dev.log"],
+    );
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let expected = fs::canonicalize(invocation.path()).unwrap().join("dev.log");
+    assert_eq!(json(&read)["data"]["saved"], expected.to_str().unwrap());
+    assert!(fs::read_to_string(&expected).unwrap().contains("ready"));
+
+    let stop = run(state_path, project_path, &["--global", "stop", "echoer"]);
+    assert!(stop.status.success());
+    wait_for_job(state_path, project_path, "echoer", false);
+}
+
+#[test]
+fn read_save_without_value_is_invalid_input() {
+    let state = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let output = run(
+        state.path(),
+        project.path(),
+        &["--global", "read", "echoer", "--save"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(json(&output)["code"], "invalid_input");
+}
+
+#[test]
+fn read_help_documents_save_contract() {
+    let output = Command::new(bin())
+        .args(["read", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    for text in [
+        "retained scrollback",
+        "200 lines",
+        "32 KiB",
+        "truncated",
+        "absolute path",
+        "parent exists",
+        "atomically replaced",
+        "0600",
+    ] {
+        assert!(help.contains(text), "help missing {text}: {help}");
+    }
+}
+
+#[test]
 fn job_names_reject_unsafe_values() {
     let state = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
@@ -368,6 +632,15 @@ fn help_documents_six_commands() {
     for command in ["list", "start", "read", "send", "press", "stop"] {
         assert!(help.contains(command), "missing {command} in help");
     }
+    let read_help = Command::new(bin())
+        .args(["read", "--help"])
+        .output()
+        .unwrap();
+    assert!(read_help.status.success());
+    assert!(
+        String::from_utf8_lossy(&read_help.stdout).contains("--save"),
+        "read help must document --save"
+    );
 }
 
 #[test]
@@ -407,10 +680,6 @@ fn lock_is_reused_across_runs() {
 }
 #[test]
 fn owner_job_survives_repeated_commands() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -467,10 +736,6 @@ fn owner_job_survives_repeated_commands() {
 
 #[test]
 fn owner_session_loss_is_diagnosed_and_not_durable() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -506,10 +771,6 @@ fn owner_session_loss_is_diagnosed_and_not_durable() {
 
 #[test]
 fn session_loss_is_observable_and_not_durable() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -540,10 +801,6 @@ fn session_loss_is_observable_and_not_durable() {
 
 #[test]
 fn session_loss_replaces_job_not_found_for_read_send_and_press() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -571,10 +828,6 @@ fn session_loss_replaces_job_not_found_for_read_send_and_press() {
 
 #[test]
 fn stop_and_start_recover_after_session_loss() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -613,10 +866,6 @@ fn stop_and_start_recover_after_session_loss() {
 
 #[test]
 fn live_session_wrong_job_is_job_not_found() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -732,10 +981,6 @@ fn keeper_schema_error_does_not_log_the_backend_output() {
 
 #[test]
 fn backend_failures_do_not_log_arguments_or_stderr() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -802,10 +1047,6 @@ fn backend_failures_do_not_log_arguments_or_stderr() {
 
 #[test]
 fn send_paste_success_enter_failure_is_not_replayed() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -854,10 +1095,6 @@ fn send_paste_success_enter_failure_is_not_replayed() {
 
 #[test]
 fn press_has_one_mutation() {
-    if !zellij_available() {
-        eprintln!("skipping: zellij is not on PATH");
-        return;
-    }
     let state = TempDir::new().unwrap();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let project = TempDir::new().unwrap();
@@ -1037,8 +1274,8 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
     fs::write(
         &cargo_path,
         canonical.replace(
-            "version = \"0.2.1\"",
-            "version = \"0.2.1\"\nversion = '0.9.9'",
+            "version = \"0.2.2\"",
+            "version = \"0.2.2\"\nversion = '0.9.9'",
         ),
     )
     .unwrap();
@@ -1049,7 +1286,7 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
 
     fs::write(
         &cargo_path,
-        canonical.replace("version = \"0.2.1\"\n", "")
+        canonical.replace("version = \"0.2.2\"\n", "")
             + "\n [dependencies.serde]\nversion = \"1\"\n",
     )
     .unwrap();
@@ -1072,16 +1309,16 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         format!("{canonical}\n [package]\nname = \"other\"\nversion = \"9.9.9\"\n"),
         canonical.replace("[package]", "[package] # comment"),
         canonical.replace(
-            "version = \"0.2.1\"",
-            "version = \"0.2.1\"\n\"version\" = \"9.9.9\"",
+            "version = \"0.2.2\"",
+            "version = \"0.2.2\"\n\"version\" = \"9.9.9\"",
         ),
         format!("{canonical}\n[\"package\"]\nversion = \"9.9.9\"\n"),
         format!("{canonical}\n['package']\nversion = \"9.9.9\"\n"),
         format!(
-            "{canonical}\ndescription = \"\"\"\n[package]\nname = \"agent-terminal\"\nversion = \"0.2.1\"\n\"\"\"\n"
+            "{canonical}\ndescription = \"\"\"\n[package]\nname = \"agent-terminal\"\nversion = \"0.2.2\"\n\"\"\"\n"
         ),
         format!(
-            "{canonical}\ndescription = \"\"\"\nname = \"agent-terminal\"\nversion = \"0.2.1\"\n[dependencies]\n\"\"\"\n"
+            "{canonical}\ndescription = \"\"\"\nname = \"agent-terminal\"\nversion = \"0.2.2\"\n[dependencies]\n\"\"\"\n"
         ),
         format!("{canonical}\n[\"pack\\u0061ge\"]\nversion = \"9.9.9\"\n"),
         format!("{canonical}\n\n[[package]]\nname = \"other\"\nversion = \"9.9.9\"\n"),
@@ -1094,8 +1331,8 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         format!("{canonical}\npackage = {{ version = \"9.9.9\" }}\n"),
         format!("{canonical}\npackage.version = \"9.9.9\"\n"),
         canonical.replace(
-            "version = \"0.2.1\"",
-            "version = \"0.2.1\"\n\"vers\\u0069on\" = \"9.9.9\"",
+            "version = \"0.2.2\"",
+            "version = \"0.2.2\"\n\"vers\\u0069on\" = \"9.9.9\"",
         ),
     ];
     for cargo in malformed {

@@ -1,4 +1,5 @@
-import { statSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { readFileSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -16,6 +17,21 @@ type CreateExtensionInput = {
 }
 
 const DEFAULT_PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+
+type PackageManifest = {
+  readonly agentTerminal?: { readonly zellijVersion?: unknown }
+}
+
+function bundledZellijVersion(packageRoot: string): string | undefined {
+  try {
+    const raw = readFileSync(join(packageRoot, "package.json"), "utf8")
+    const manifest = JSON.parse(raw) as PackageManifest
+    const version = manifest.agentTerminal?.zellijVersion
+    return typeof version === "string" ? version : undefined
+  } catch {
+    return undefined
+  }
+}
 
 function isExecutableFile(path: string): boolean {
   const stat = statSync(path, { throwIfNoEntry: false })
@@ -93,7 +109,35 @@ export const createExtension = (input: CreateExtensionInput = {}): ExtensionFact
     }
 
     const zellijBin = join(packageRoot, "bin", "zellij", "zellij")
-    const bundledZellijMissing = !isExecutableFile(zellijBin)
+    let useBundledZellij = isExecutableFile(zellijBin)
+    const expectedZellijVersion = bundledZellijVersion(packageRoot)
+    if (expectedZellijVersion !== undefined) {
+      if (!useBundledZellij) {
+        stderr(
+          `[agent-terminal] warning: bundled Zellij is missing or not executable: ${zellijBin}; continuing without it`,
+        )
+      } else {
+        let detected = ""
+        try {
+          detected = execFileSync(zellijBin, ["--version"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          }).trim()
+        } catch (error) {
+          useBundledZellij = false
+          stderr(
+            `[agent-terminal] warning: bundled Zellij failed to report its version: ${String(error)}; continuing without it`,
+          )
+        }
+        const expected = `zellij ${expectedZellijVersion}`
+        if (detected !== "" && detected !== expected) {
+          stderr(
+            `[agent-terminal] warning: bundled Zellij version mismatch: expected ${expected}, got ${JSON.stringify(detected)}; continuing anyway`,
+          )
+        }
+      }
+    }
+    const bundledZellijMissing = !useBundledZellij
 
     // Expose the bundled binaries to every child process. pi's bash tool
     // live-spreads process.env (getShellEnv), so a load-time PATH mutation is

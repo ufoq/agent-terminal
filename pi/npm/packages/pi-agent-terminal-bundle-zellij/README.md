@@ -25,8 +25,10 @@ The extension itself is responsible for PATH setup and compatibility flags:
 
 - It prepends the bundled `agent-terminal` binary directory to `PATH` so the
   CLI is available to every child process.
-- It also prepends the bundled Zellij binary directory to `PATH`, so the pinned
-  Zellij 0.45.1 takes precedence over any system Zellij.
+- It verifies the bundled Zellij binary reports exactly `zellij 0.45.1`, then
+  prepends its directory to `PATH`, so the pinned backend takes precedence over any
+  system Zellij. A missing or mismatched binary prints a warning but does not stop the
+  extension from loading.
 
 This PATH change is process-local: it applies inside `pi` and its children, not
 to a plain shell or `docker exec`. Outside `pi`, invoke the packaged absolute

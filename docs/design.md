@@ -199,7 +199,17 @@ Six commands: `start`, `read`, `send`, `press`, `stop`, `list`.
 Every response is one JSON object with `status: ok|error`, stable error codes, and no
 state paths.
 
-`read` returns the newest 200 lines or 32 KiB, whichever is smaller, with `truncated`.
+`read` returns the newest 200 lines or 32 KiB, whichever is smaller, with `truncated`
+describing only that inline preview.
+
+`read --save PATH` writes the complete ANSI-stripped retained scrollback to `PATH` and
+adds `saved` (absolute path), `saved_bytes`, and `saved_lines` to the response. The inline
+preview stays bounded. The destination must name a file whose parent directory already exists;
+it is replaced atomically with mode `0600`, and is not followed through a final symlink. The saved file
+is a caller-owned snapshot, not a live tail, and is not removed by `stop`. A save I/O failure
+(missing parent, permissions, full disk, rename) is `state_io` and names the caller-supplied
+destination; malformed paths are `invalid_input`, and runtime state paths stay hidden.
+The 32 KiB cap applies only to the preview.
 
 ## Subagents
 

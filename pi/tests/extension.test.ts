@@ -50,7 +50,9 @@ function createFakeApi(): FakeApiHarness {
 const tempRoots: string[] = []
 
 type PackageLayoutOptions = {
+  readonly bundleZellijVersion?: string
   readonly withZellij?: boolean
+  readonly zellijOutput?: string
 }
 
 function createPackageLayout(options: PackageLayoutOptions = {}): string {
@@ -61,11 +63,21 @@ function createPackageLayout(options: PackageLayoutOptions = {}): string {
   const agentTerminalBin = join(binDir, "agent-terminal")
   writeFileSync(agentTerminalBin, "#!/bin/sh\nexit 0\n")
   chmodSync(agentTerminalBin, 0o755)
+  if (options.bundleZellijVersion !== undefined) {
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "@ufoq/pi-agent-terminal-bundle-zellij",
+        agentTerminal: { zellijVersion: options.bundleZellijVersion },
+      }),
+    )
+  }
   if (options.withZellij === true) {
     const zellijDir = join(root, "bin", "zellij")
     mkdirSync(zellijDir, { recursive: true })
     const zellijBin = join(zellijDir, "zellij")
-    writeFileSync(zellijBin, "#!/bin/sh\nexit 0\n")
+    const body = options.zellijOutput === undefined ? "exit 0" : `echo '${options.zellijOutput}'`
+    writeFileSync(zellijBin, `#!/bin/sh\n${body}\n`)
     chmodSync(zellijBin, 0o755)
   }
   mkdirSync(join(root, "skills", "agent-terminal"), { recursive: true })
@@ -187,6 +199,55 @@ describe("pi agent-terminal extension", () => {
     loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
     expect(pathParts()[0]).toBe(join(root, "bin", "linux-x64"))
     expect(pathParts()).not.toContain(join(root, "bin", "zellij"))
+  })
+
+  it("warns and keeps loading when a declared bundled zellij is missing", () => {
+    const root = createPackageLayout({ bundleZellijVersion: "0.45.1" })
+    process.env["PATH"] = "/usr/bin"
+    const diagnostics: string[] = []
+    const { api } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "linux",
+      arch: "x64",
+      stderr: (message) => diagnostics.push(message),
+    })
+    expect(pathParts()[0]).toBe(join(root, "bin", "linux-x64"))
+    expect(pathParts()).not.toContain(join(root, "bin", "zellij"))
+    expect(diagnostics.join("\n")).toContain("warning: bundled Zellij is missing")
+  })
+
+  it("warns and keeps loading with a mismatched bundled zellij", () => {
+    const root = createPackageLayout({
+      bundleZellijVersion: "0.45.1",
+      withZellij: true,
+      zellijOutput: "zellij 0.45.10",
+    })
+    process.env["PATH"] = "/usr/bin"
+    const diagnostics: string[] = []
+    const { api } = createFakeApi()
+    loadExtension(api, {
+      packageRoot: root,
+      platform: "linux",
+      arch: "x64",
+      stderr: (message) => diagnostics.push(message),
+    })
+    expect(pathParts()[0]).toBe(join(root, "bin", "zellij"))
+    expect(pathParts()[1]).toBe(join(root, "bin", "linux-x64"))
+    expect(diagnostics.join("\n")).toContain("warning: bundled Zellij version mismatch")
+    expect(diagnostics.join("\n")).toContain("continuing anyway")
+  })
+
+  it("accepts the exact bundled zellij version declared by the manifest", () => {
+    const root = createPackageLayout({
+      bundleZellijVersion: "0.45.1",
+      withZellij: true,
+      zellijOutput: "zellij 0.45.1",
+    })
+    process.env["PATH"] = "/usr/bin"
+    const { api } = createFakeApi()
+    loadExtension(api, { packageRoot: root, platform: "linux", arch: "x64" })
+    expect(pathParts()[0]).toBe(join(root, "bin", "zellij"))
   })
 
   it("does not duplicate PATH entries that are already present", () => {

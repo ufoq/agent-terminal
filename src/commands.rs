@@ -1,5 +1,7 @@
 use std::{
     fs::{self, File},
+    io::Write as _,
+    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -172,7 +174,12 @@ pub fn start(
     Ok(CommandData::Start(StartData { job }))
 }
 
-pub fn read(context: &Context, job: &JobName, session_lost: bool) -> Result<CommandData, Error> {
+pub fn read(
+    context: &Context,
+    job: &JobName,
+    session_lost: bool,
+    save: Option<&Path>,
+) -> Result<CommandData, Error> {
     let panes = current_panes(context)?;
     let pane = find_job(&panes, job).ok_or_else(|| missing_job(job, session_lost))?;
     let scratch = context.paths.scratch_dir();
@@ -185,12 +192,116 @@ pub fn read(context: &Context, job: &JobName, session_lost: bool) -> Result<Comm
         .map_err(|source| Error::state_io("read captured screen", &path, source))?;
     let _ = fs::remove_file(&path);
     let screen = normalize_screen(&raw);
+    let saved = save
+        .map(|path| save_screen(path, &screen, context.paths.runtime_root()))
+        .transpose()?;
+    let (saved, saved_bytes, saved_lines) = saved.map_or((None, None, None), |saved| {
+        (Some(saved.path), Some(saved.bytes), Some(saved.lines))
+    });
     let bounded = bound_screen(&screen, SCREEN_LINES, SCREEN_BYTES);
     Ok(CommandData::Read(ReadData {
         job: job.clone(),
         screen: bounded.screen,
         truncated: bounded.truncated,
+        saved,
+        saved_bytes,
+        saved_lines,
     }))
+}
+
+#[derive(Debug)]
+struct SavedScreen {
+    path: String,
+    bytes: u64,
+    lines: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    // Per-thread so parallel unit tests cannot trip each other's injection.
+    static INJECT_REPLACE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn path_ends_with_dot_component(path: &Path) -> bool {
+    let raw = path.as_os_str().as_encoded_bytes();
+    raw == b"." || raw == b".." || raw.ends_with(b"/.") || raw.ends_with(b"/..")
+}
+
+fn save_screen(path: &Path, screen: &str, runtime_root: &Path) -> Result<SavedScreen, Error> {
+    if path.as_os_str().is_empty() {
+        return Err(invalid_path("saved screen path must not be empty"));
+    }
+    if path.as_os_str().as_encoded_bytes().last() == Some(&b'/') {
+        return Err(invalid_path("saved screen path must not end with '/'"));
+    }
+    if path_ends_with_dot_component(path) {
+        return Err(invalid_path("saved screen path must name a file"));
+    }
+    if path.to_str().is_none() {
+        return Err(invalid_path("saved screen path must be valid UTF-8"));
+    }
+
+    let absolute = std::path::absolute(path).map_err(|source| Error::save_failed(path, source))?;
+    if absolute.starts_with(runtime_root) {
+        return Err(invalid_path(
+            "saved screen path must not be inside the runtime state directory",
+        ));
+    }
+    let Some(file_name) = absolute.file_name() else {
+        return Err(invalid_path("saved screen path must name a file"));
+    };
+    let Some(parent) = absolute.parent() else {
+        return Err(invalid_path("saved screen path must name a file"));
+    };
+    let parent = fs::canonicalize(parent).map_err(|source| Error::save_failed(path, source))?;
+    let destination = parent.join(file_name);
+
+    if fs::symlink_metadata(&destination).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+        return Err(invalid_path(
+            "saved screen path must name a file, not a directory",
+        ));
+    }
+    if destination.starts_with(runtime_root) {
+        return Err(invalid_path(
+            "saved screen path must not be inside the runtime state directory",
+        ));
+    }
+    let Some(destination_text) = destination.to_str() else {
+        return Err(invalid_path("saved screen path must be valid UTF-8"));
+    };
+
+    let mut file = tempfile::NamedTempFile::new_in(&parent)
+        .map_err(|source| Error::save_failed(path, source))?;
+    file.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|source| Error::save_failed(path, source))?;
+    file.write_all(screen.as_bytes())
+        .map_err(|source| Error::save_failed(path, source))?;
+    file.flush()
+        .map_err(|source| Error::save_failed(path, source))?;
+
+    #[cfg(test)]
+    if INJECT_REPLACE_FAILURE.with(|flag| flag.replace(false)) {
+        return Err(Error::save_failed(
+            path,
+            std::io::Error::other("injected replacement failure"),
+        ));
+    }
+
+    file.persist(&destination)
+        .map_err(|error| Error::save_failed(path, error.error))?;
+
+    Ok(SavedScreen {
+        path: destination_text.to_owned(),
+        bytes: u64::try_from(screen.len()).unwrap_or(u64::MAX),
+        lines: screen.lines().count(),
+    })
+}
+
+fn invalid_path(message: &str) -> Error {
+    Error::InvalidInput {
+        message: message.to_owned(),
+    }
 }
 
 pub fn send(
@@ -404,9 +515,198 @@ pub fn run_command(
             cwd.as_deref().unwrap_or_else(|| Path::new(".")),
             &command,
         ),
-        crate::cli::CliCommand::Read { job } => read(context, &job, session_lost),
+        crate::cli::CliCommand::Read { job, save } => {
+            read(context, &job, session_lost, save.as_deref())
+        }
         crate::cli::CliCommand::Send { job, text } => send(context, &job, &text, session_lost),
         crate::cli::CliCommand::Press { job, key } => press(context, &job, &key, session_lost),
         crate::cli::CliCommand::Stop { job } => stop(context, &job),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods)]
+
+    use std::{
+        ffi::OsString,
+        os::unix::{
+            ffi::OsStringExt as _,
+            fs::{MetadataExt as _, PermissionsExt as _, symlink},
+        },
+    };
+
+    use tempfile::TempDir;
+
+    use super::{INJECT_REPLACE_FAILURE, save_screen};
+
+    fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn saves_multibyte_text_byte_for_byte_with_metadata() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("snap.log");
+        let screen = "alpha\nβeta\n界";
+
+        let saved = save_screen(&path, screen, &canonical(runtime.path())).unwrap();
+
+        assert_eq!(saved.path, path.to_str().unwrap());
+        assert_eq!(saved.bytes, u64::try_from(screen.len()).unwrap());
+        assert_eq!(saved.lines, 3);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), screen);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn empty_snapshot_has_zero_metadata() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("empty.log");
+
+        let saved = save_screen(&path, "", &canonical(runtime.path())).unwrap();
+
+        assert_eq!(saved.bytes, 0);
+        assert_eq!(saved.lines, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+    }
+
+    #[test]
+    fn replaces_existing_file_and_tightens_mode() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("snap.log");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        save_screen(&path, "new\n", &canonical(runtime.path())).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn replaces_symlink_entry_without_touching_target() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let target = canonical(dir.path()).join("target.log");
+        let link = canonical(dir.path()).join("link.log");
+        std::fs::write(&target, "target").unwrap();
+        symlink(&target, &link).unwrap();
+
+        save_screen(&link, "link content", &canonical(runtime.path())).unwrap();
+
+        assert!(
+            !std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "link content");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "target");
+    }
+
+    #[test]
+    fn missing_parent_is_actionable_and_creates_nothing() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("missing").join("snap.log");
+
+        let error = save_screen(&path, "x", &canonical(runtime.path())).unwrap_err();
+
+        assert_eq!(error.kind(), "state_io");
+        assert!(error.public_message().contains("snap.log"));
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn pre_rename_failure_preserves_existing_file_and_cleans_temp() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("snap.log");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        INJECT_REPLACE_FAILURE.with(|flag| flag.set(true));
+
+        let error = save_screen(&path, "new", &canonical(runtime.path())).unwrap_err();
+
+        assert_eq!(error.kind(), "state_io");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+        assert_eq!(mode(&path), 0o640);
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "temporary file was not removed: {names:?}");
+    }
+
+    #[test]
+    fn read_only_parent_preserves_existing_file() {
+        if std::fs::metadata("/proc/self").unwrap().uid() == 0 {
+            eprintln!("skipping: running as root");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let path = canonical(dir.path()).join("snap.log");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = save_screen(&path, "new", &canonical(runtime.path()));
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), "state_io");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    }
+
+    #[test]
+    fn rejects_invalid_destination_paths_before_writing() {
+        let dir = TempDir::new().unwrap();
+        let runtime = TempDir::new().unwrap();
+        let root = canonical(dir.path());
+        let runtime_root = canonical(runtime.path());
+        let subdir = root.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let locks = runtime_root.join("locks");
+        std::fs::create_dir(&locks).unwrap();
+        let victim = root.join("victim.log");
+        std::fs::write(&victim, "keep").unwrap();
+
+        for path in [
+            root.join(""),
+            root.join("file/"),
+            root.join(".."),
+            victim.join("."),
+            victim.join(".."),
+            subdir,
+            locks.join("project.lock"),
+            runtime_root.join("missing").join("snap.log"),
+        ] {
+            let error = save_screen(&path, "x", &runtime_root).unwrap_err();
+            assert_eq!(error.kind(), "invalid_input", "path {path:?}");
+        }
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+
+        let bad_name = OsString::from_vec(vec![b'b', 0xFF]);
+        let error = save_screen(&root.join(&bad_name), "x", &runtime_root).unwrap_err();
+        assert_eq!(error.kind(), "invalid_input");
+        let error =
+            save_screen(&root.join(bad_name).join("missing"), "x", &runtime_root).unwrap_err();
+        assert_eq!(error.kind(), "invalid_input");
+
+        let bad_parent = root.join(OsString::from_vec(vec![b'd', 0xFF]));
+        std::fs::create_dir(&bad_parent).unwrap();
+        let link = root.join("bad-link");
+        symlink(&bad_parent, &link).unwrap();
+        let error = save_screen(&link.join("snap.log"), "x", &runtime_root).unwrap_err();
+        assert_eq!(error.kind(), "invalid_input");
+        assert!(!link.join("snap.log").exists());
     }
 }

@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
+  ZELLIJ_VERSION,
   buildAgentTerminalBinary,
   cleanPackage,
   compileTypeScript,
@@ -37,6 +38,12 @@ const bundlePackage = join(packagesDir, "pi-agent-terminal-bundle-zellij")
 
 async function main() {
   run("node", [join(repoRoot, "scripts", "release-version.mjs"), "check"])
+  const bundleManifest = JSON.parse(readFileSync(join(bundlePackage, "package.json"), "utf8"))
+  if (bundleManifest.agentTerminal?.zellijVersion !== ZELLIJ_VERSION) {
+    throw new Error(
+      `bundle manifest declares Zellij ${JSON.stringify(bundleManifest.agentTerminal?.zellijVersion)}, expected ${ZELLIJ_VERSION}`,
+    )
+  }
   cleanPackage(slimPackage)
   cleanPackage(bundlePackage)
 
