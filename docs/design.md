@@ -40,8 +40,10 @@ A scope is the project digest plus the owner identity. The project is the neares
 ancestor, or the invocation directory. Parent pi, every subagent child pi, and siblings
 therefore have separate job namespaces automatically.
 
-`--global` selects a shared worker-lifetime namespace. It has no owner watcher. It is
-removed by an explicit stop, after 60 seconds with no jobs, or when the worker stops.
+`--global` selects a per-project worker-lifetime namespace shared by every pi process in
+that project. It has no owner watcher. It is removed by an explicit stop once no job or
+unknown panes remain, after 60 seconds with no job or unknown panes, or when the worker
+stops.
 
 ## Jobs
 
@@ -53,7 +55,8 @@ Job names match `[a-z0-9][a-z0-9._-]{0,63}`.
 
 Jobs are created with `--close-on-exit`, so an exited process leaves no pane, no job
 record, and no stale state. A completed job simply disappears. The skill tells the agent
-to read output before the process exits and to stop jobs it no longer needs.
+to capture output and exit status in a file inside the job command instead of racing to
+read before the process exits, and to stop jobs it no longer needs.
 
 If a project has state but its named session is absent, diagnostic commands
 report it: `list` returns an empty `jobs` array plus `"session":"lost"` when no
@@ -214,7 +217,7 @@ parent pi
   cleans child jobs.
 - `subagent remove` kills the child pi; its keeper removes the child session.
 - Parent and siblings cannot see each other's attached jobs.
-- `--global` is the only deliberate sharing mechanism.
+- `--global` is the only deliberate namespace that outlives `pi`.
 
 ## Deliberate non-goals
 

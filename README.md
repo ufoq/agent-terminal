@@ -81,11 +81,13 @@ diagnostic visible until a non-`list` command or `start` clears it.
 
 - The owner is the nearest `pi` ancestor. The full `pi` ancestor chain is recorded.
 - The project is the nearest `.git` ancestor, or the invocation directory.
-- A job lives while its owning `pi` process and Zellij session live.
+- A job lives while its command, owning `pi` ancestor chain, and Zellij session live.
 - Parent `pi`, each subagent child, and siblings have separate job namespaces.
-- When an owner exits, a keeper pane in that session removes the session and its jobs.
-- `--global` is a worker-lifetime namespace: it survives `pi`, is shared, and is removed
-  by `stop`, after 60 seconds with no jobs, or when the worker stops.
+- When a `pi` process in the owner chain exits, a keeper pane in that session removes the
+  session and its jobs.
+- `--global` is a worker-lifetime namespace within the current project, shared by every
+  agent using that project: it survives `pi` and is removed by `stop`, after 60 seconds
+  with no jobs or unknown panes, or when the worker stops.
 
 Jobs must stay in their pane. Do not `nohup`, `setsid`, `tmux`, or otherwise daemonize a
 job; use `--global` for long-lived work.
