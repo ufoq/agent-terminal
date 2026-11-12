@@ -28,9 +28,9 @@ import { Readable } from "node:stream"
 import { finished } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
 
-export const ZELLIJ_VERSION = "0.44.3"
-export const ZELLIJ_ARCHIVE_SHA256 = "f901129919b0a405ac5f278f53acd7fde5d62401324c509b6233038d5c0ad1f9"
-export const ZELLIJ_BINARY_SHA256 = "a675b0106263113b9cb8f028649bad05c5d2283331fa62b2b36dd275aeaaa4d3"
+export const ZELLIJ_VERSION = "0.45.1"
+export const ZELLIJ_ARCHIVE_SHA256 = "d7bda1e18c30a688833ae7627f1d6a253bbba5349a4bc48e4f0ec008aaf75ed1"
+export const ZELLIJ_BINARY_SHA256 = "0ec6ef07b63c6355c02ce18343d40ef5ef5af19e25313ea9009c8fceda29e94f"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = dirname(__dirname)

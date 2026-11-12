@@ -7,7 +7,7 @@ multiplexer. Zellij is used by the `agent-terminal` CLI as its session backend.
 
 - Project: https://zellij.dev
 - Source: https://github.com/zellij-org/zellij
-- Bundled version: 0.44.3
+- Bundled version: 0.45.1
 - Bundled artifact: `zellij-no-web-x86_64-unknown-linux-musl.tar.gz`
 - License: MIT License
 

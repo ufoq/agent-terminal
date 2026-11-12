@@ -8,12 +8,12 @@ keys across turns. The agent gets a small CLI and a skill; Zellij sessions, pane
 cleanup stay behind the interface. Jobs are scoped to the owning `pi` process, so
 subagents get isolated jobs automatically.
 
-0.2.0 supports pi only.
+0.2.1 supports pi only.
 
 ## Requirements
 
 - Linux
-- Zellij 0.44 or newer
+- Zellij 0.44.3 or 0.45.1 (tested). Zellij 0.46.0 is not supported: it can return empty pane data during startup.
 - pi for the agent integration
 
 The `-bundle-zellij` packages ship a pinned Zellij binary. Builds need Rust and Bun.

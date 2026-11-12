@@ -31,7 +31,8 @@ This PATH change is process-local: it applies inside `pi` and its children, not
 to a plain shell or `docker exec`. Outside `pi`, invoke the packaged absolute
 `bin/linux-x64/agent-terminal` and add `--global` when there is no `pi`
 ancestor. This slim package does not ship Zellij, so Zellij must be installed
-and on `PATH`.
+and on `PATH`. Use Zellij 0.44.3 or 0.45.1; 0.46.0 is not supported because it
+can return empty pane data during startup.
 
 Jobs are scoped to the nearest `pi` process in the CLI's ancestor chain. The
 full chain is recorded so a parent `pi` exit also cleans jobs started by
