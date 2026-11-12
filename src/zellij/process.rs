@@ -1,15 +1,12 @@
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
-    io::{self, Read as _},
-    path::{Path, PathBuf},
+    fs::File,
+    io::{self, Read as _, Seek as _, SeekFrom},
+    path::Path,
     process::{Command, ExitStatus, Stdio},
     time::Duration,
 };
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
-use uuid::Uuid;
 use wait_timeout::ChildExt as _;
 
 use crate::error::Error;
@@ -22,42 +19,38 @@ pub(super) struct ProcessOutput {
     pub stderr: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn invoke(
     executable: &Path,
-    config: &Path,
-    socket_dir: &Path,
+    config_dir: &Path,
+    xdg_config: &Path,
+    xdg_data: &Path,
+    xdg_cache: &Path,
+    scratch: &Path,
     arguments: &[OsString],
     timeout: Duration,
 ) -> Result<ProcessOutput, Error> {
-    let parent = config.parent().ok_or_else(|| Error::ZellijFailed {
-        message: "terminal configuration path has no parent directory".to_owned(),
-    })?;
-    fs::create_dir_all(parent).map_err(|source| Error::StateIo {
-        action: "create zellij capture directory",
-        path: parent.to_path_buf(),
-        source,
-    })?;
-    fs::create_dir_all(socket_dir).map_err(|source| Error::StateIo {
-        action: "create zellij socket directory",
-        path: socket_dir.to_path_buf(),
-        source,
-    })?;
-    set_private_dir(socket_dir)?;
-    let token = Uuid::new_v4().simple().to_string();
-    let captures = CapturePaths {
-        stdout: parent.join(format!(".{token}.stdout")),
-        stderr: parent.join(format!(".{token}.stderr")),
-    };
-    let stdout = create_private(&captures.stdout)?;
-    let stderr = create_private(&captures.stderr)?;
+    scratch
+        .metadata()
+        .map_err(|source| Error::state_io("inspect zellij scratch directory", scratch, source))?;
+    let mut stdout = tempfile::tempfile()
+        .map_err(|source| Error::state_io("create zellij capture file", scratch, source))?;
+    let mut stderr = tempfile::tempfile()
+        .map_err(|source| Error::state_io("create zellij capture file", scratch, source))?;
     let mut child = Command::new(executable)
-        .arg("--config")
-        .arg(config)
         .args(arguments)
-        .env("ZELLIJ_SOCKET_DIR", socket_dir)
+        .env("ZELLIJ_CONFIG_DIR", config_dir)
+        .env("XDG_CONFIG_HOME", xdg_config)
+        .env("XDG_DATA_HOME", xdg_data)
+        .env("XDG_CACHE_HOME", xdg_cache)
+        .env_remove("ZELLIJ_CONFIG_FILE")
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
+        .stdout(Stdio::from(stdout.try_clone().map_err(|source| {
+            Error::state_io("clone zellij capture handle", scratch, source)
+        })?))
+        .stderr(Stdio::from(stderr.try_clone().map_err(|source| {
+            Error::state_io("clone zellij capture handle", scratch, source)
+        })?))
         .spawn()
         .map_err(|source| {
             if source.kind() == io::ErrorKind::NotFound {
@@ -87,67 +80,15 @@ pub(super) fn invoke(
     };
     Ok(ProcessOutput {
         status,
-        stdout: read_capture(&captures.stdout)?,
-        stderr: read_capture(&captures.stderr)?,
+        stdout: read_capture(&mut stdout, scratch)?,
+        stderr: read_capture(&mut stderr, scratch)?,
     })
 }
 
-fn create_private(path: &Path) -> Result<File, Error> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    options.open(path).map_err(|source| Error::StateIo {
-        action: "create zellij capture file",
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-fn set_private_dir(path: &Path) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            Error::StateIo {
-                action: "set zellij socket directory permissions",
-                path: path.to_path_buf(),
-                source,
-            }
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
-}
-
-fn read_capture(path: &Path) -> Result<String, Error> {
+fn read_capture(file: &mut File, scratch: &Path) -> Result<String, Error> {
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(CAPTURE_LIMIT).read_to_end(&mut bytes))
-        .map_err(|source| Error::StateIo {
-            action: "read zellij capture file",
-            path: path.to_path_buf(),
-            source,
-        })?;
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.take(CAPTURE_LIMIT).read_to_end(&mut bytes))
+        .map_err(|source| Error::state_io("read zellij capture file", scratch, source))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-struct CapturePaths {
-    stdout: PathBuf,
-    stderr: PathBuf,
-}
-
-impl Drop for CapturePaths {
-    fn drop(&mut self) {
-        for path in [&self.stdout, &self.stderr] {
-            if let Err(error) = fs::remove_file(path)
-                && error.kind() != io::ErrorKind::NotFound
-            {
-                tracing::debug!(path = %path.display(), %error, "capture cleanup failed");
-            }
-        }
-    }
 }

@@ -31,10 +31,10 @@ The extension itself is responsible for PATH setup and compatibility flags:
   shared agent-terminal harness; pi has no native equivalents, so they are
   accepted without claiming behavior.
 
-Session scoping is handled by pi's native `PI_SESSION_ID` environment variable,
-which the agent-terminal CLI consumes directly. The extension does not inject
-`AGENT_TERMINAL_SCOPE`.
-
+Jobs are scoped to the nearest `pi` process in the CLI's ancestor chain. The
+full chain is recorded so a parent `pi` exit also cleans jobs started by
+subagents. No environment variable is required; use `--global` for a
+worker-lifetime namespace.
 ## License
 
 MIT

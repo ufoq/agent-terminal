@@ -15,6 +15,18 @@ impl JobName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[must_use]
+    pub fn pane_title(&self) -> String {
+        format!("agent-terminal:job:{}", self.0)
+    }
+
+    #[must_use]
+    pub fn from_pane_title(title: &str) -> Option<Self> {
+        title
+            .strip_prefix("agent-terminal:job:")
+            .and_then(|value| Self::from_str(value).ok())
+    }
 }
 
 impl FromStr for JobName {
@@ -50,90 +62,12 @@ impl fmt::Display for JobName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionName(String);
-
-impl SessionName {
-    pub fn new(value: String) -> Result<Self, Error> {
-        if value.is_empty()
-            || !value.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            })
-        {
-            return Err(Error::InvalidInput {
-                message: format!("invalid session name {value:?}"),
-            });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedScreen {
+    pub screen: String,
+    pub truncated: bool,
 }
 
-impl fmt::Display for SessionName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct TerminalPaneId(u32);
-
-impl TerminalPaneId {
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for TerminalPaneId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "terminal_{}", self.0)
-    }
-}
-
-impl FromStr for TerminalPaneId {
-    type Err = Error;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let numeric = value
-            .strip_prefix("terminal_")
-            .ok_or_else(|| Error::InvalidInput {
-                message: format!("invalid terminal pane id {value:?}"),
-            })?;
-        if numeric.is_empty() || !numeric.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(Error::InvalidInput {
-                message: format!("invalid terminal pane id {value:?}"),
-            });
-        }
-        numeric
-            .parse::<u32>()
-            .map(Self)
-            .map_err(|source| Error::InvalidInput {
-                message: format!("invalid terminal pane id {value:?}: {source}"),
-            })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Running,
-    Exited,
-}
-
-/// A Zellij key-binding token. Only `zellij_token` is ever consumed by the
-/// `press` command; the human-facing display form was dead code and removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Key(String);
 
@@ -184,7 +118,12 @@ impl FromStr for Key {
             && character.is_ascii()
             && !character.is_ascii_control()
         {
-            return Ok(Self(format!("Alt {character}")));
+            let name = if character == ' ' {
+                "Space".to_owned()
+            } else {
+                character.to_string()
+            };
+            return Ok(Self(format!("Alt {name}")));
         }
         Err(Error::InvalidInput {
             message: format!("unsupported key {value:?}"),
@@ -192,73 +131,76 @@ impl FromStr for Key {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoundedScreen {
-    pub screen: String,
-    pub truncated: bool,
-}
-
-/// Strip ANSI/terminal escape sequences and normalize line endings and control
-/// characters so the returned screen text stays readable and token-efficient.
-///
-/// The order matters: escapes are removed first, then CRLF/CR are folded to LF,
-/// then remaining C0 controls except LF and tab are dropped. Callers then bound
-/// the result to a fixed line/byte budget.
-#[must_use]
-pub fn normalize_screen(source: &str) -> String {
-    let stripped = strip_ansi_escapes::strip(source.as_bytes());
-    let stripped = String::from_utf8_lossy(&stripped);
-    let mut normalized = String::with_capacity(stripped.len());
-    let mut previous_cr = false;
-    for character in stripped.chars() {
-        if character == '\r' {
-            previous_cr = true;
-            continue;
-        }
-        if previous_cr && character != '\n' {
-            normalized.push('\n');
-        }
-        previous_cr = false;
-        let keep = matches!(character, '\n' | '\t') || !character.is_ascii_control();
-        if keep {
-            normalized.push(character);
-        }
-    }
-    if previous_cr {
-        normalized.push('\n');
-    }
-    normalized
-}
-
-#[must_use]
-pub fn bound_screen(source: &str, max_lines: usize, max_bytes: usize) -> BoundedScreen {
-    let logical_lines = source.bytes().filter(|byte| *byte == b'\n').count()
-        + usize::from(!source.is_empty() && !source.ends_with('\n'));
-    let lines_to_skip = logical_lines.saturating_sub(max_lines);
-    let line_start = if max_lines == 0 {
-        source.len()
-    } else if lines_to_skip == 0 {
-        0
-    } else {
-        source
-            .match_indices('\n')
-            .nth(lines_to_skip - 1)
-            .map_or(0, |(index, _)| index + 1)
-    };
-    let line_tail = &source[line_start..];
-    let byte_floor = line_tail.len().saturating_sub(max_bytes);
-    let mut byte_start = byte_floor;
-    while byte_start < line_tail.len() && !line_tail.is_char_boundary(byte_start) {
-        byte_start += 1;
-    }
-    BoundedScreen {
-        screen: line_tail[byte_start..].to_owned(),
-        truncated: line_start > 0 || byte_start > 0,
-    }
-}
-
 fn single_character(value: &str, prefix: &str) -> Option<char> {
-    let mut characters = value.strip_prefix(prefix)?.chars();
+    let rest = value.strip_prefix(prefix)?;
+    let mut characters = rest.chars();
     let character = characters.next()?;
-    characters.next().is_none().then_some(character)
+    if characters.next().is_some() {
+        return None;
+    }
+    Some(character)
+}
+
+#[must_use]
+pub fn normalize_screen(input: &str) -> String {
+    strip_ansi_escapes::strip_str(input)
+}
+
+#[must_use]
+pub fn bound_screen(input: &str, max_lines: usize, max_bytes: usize) -> BoundedScreen {
+    let mut lines: Vec<&str> = input.lines().collect();
+    let mut truncated = lines.len() > max_lines;
+    if truncated {
+        lines = lines
+            .into_iter()
+            .rev()
+            .take(max_lines)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+    }
+    let mut screen = lines.join("\n");
+    if screen.len() > max_bytes {
+        let mut start = screen.len() - max_bytes;
+        while !screen.is_char_boundary(start) {
+            start += 1;
+        }
+        screen = screen[start..].to_owned();
+        truncated = true;
+    }
+    BoundedScreen { screen, truncated }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Key, bound_screen};
+
+    #[test]
+    fn truncation_keeps_utf8_boundaries() {
+        let input = "界".repeat(10923);
+        let bounded = bound_screen(&input, 1000, 32 * 1024);
+        assert!(bounded.truncated);
+        assert!(bounded.screen.len() <= 32 * 1024);
+        assert!(bounded.screen.is_char_boundary(0));
+    }
+
+    #[test]
+    fn lines_are_bounded() {
+        let input = (0..300)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bounded = bound_screen(&input, 200, 32 * 1024);
+        assert!(bounded.truncated);
+        assert_eq!(bounded.screen.lines().count(), 200);
+    }
+
+    #[test]
+    fn alt_space_uses_named_token() {
+        assert_eq!(
+            "Alt+ ".parse::<Key>().ok().as_ref().map(Key::zellij_token),
+            Some("Alt Space")
+        );
+    }
 }

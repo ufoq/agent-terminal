@@ -1,136 +1,95 @@
 ---
 name: agent-terminal
-description: "Run persistent or interactive terminal jobs through a simple Zellij wrapper. Use for servers, watchers, REPLs, debuggers, and anything that must survive across turns. Prefer plain Bash for short foreground commands."
+description: "Run persistent or interactive terminal jobs in named Zellij panes. Use for servers, watchers, REPLs, debuggers, and anything that must survive across turns. Prefer plain Bash for short foreground commands."
 compatibility: Requires the agent-terminal binary on PATH and a Bash tool.
 metadata:
   project: agent-terminal
-  version: "1"
+  version: "3"
 ---
 
 # Agent Terminal
 
-`agent-terminal` gives you persistent, project-scoped terminal jobs with a small, stable CLI. Use it when the process must outlive one Bash call or needs interactive input. Use plain Bash for anything that finishes in one call.
+`agent-terminal` runs commands in named, persistent terminal panes. Use it when a process must outlive one Bash call or needs interactive input. Use plain Bash when the command finishes in one call.
 
-The CLI finds your project root by walking up to the nearest `.git` directory; it falls back to the current directory. Jobs are identified by stable names, not Zellij sessions or pane IDs.
+The project is the nearest `.git` ancestor of the invocation directory, or the directory itself. Jobs are scoped to the nearest `pi` process, so subagents get their own jobs automatically. You do not manage scopes.
 
 ## Commands
 
-Start a job. Everything after `--` is passed as the command argv.
+Everything after `--` is the job command.
 
 ```bash
-agent-terminal start dev-server -- npm run dev
-agent-terminal start api-build --cwd ./packages/api -- npm run build
-agent-terminal start build -- /bin/sh -c 'make -j"$(nproc)" 2>&1 | tee build.log'
+agent-terminal start dev -- npm run dev
+agent-terminal start build --cwd ./packages/api -- npm test
+agent-terminal start shell -- /bin/bash
 ```
 
-Read state and the bounded visible screen.
-
-```bash
-agent-terminal read dev-server
-```
-
-Send text. Enter is appended by default; use `--no-submit` to avoid it.
-
-```bash
-agent-terminal send repl -- '2 + 2'
-agent-terminal send prompt --no-submit -- 'partial input'
-```
-
-Press named keys.
-
-```bash
-agent-terminal press debugger -- Down Enter
-agent-terminal press pager -- PageDown
-```
-
-Stop a job. It automatically escalates from graceful termination when needed.
-
-```bash
-agent-terminal stop dev-server
-```
-
-List jobs in the current project scope.
+Start once per job name. A duplicate start returns `job_exists`.
 
 ```bash
 agent-terminal list
+agent-terminal read dev
+agent-terminal send repl '2 + 2'
+agent-terminal press debugger Enter
+agent-terminal stop dev
 ```
 
-## Optional overrides
+`send` pastes text and submits it with Enter. `press` sends one key. Keys are `Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `F1`-`F12`, `Ctrl+<letter>`, and `Alt+<character>`.
 
-- `--project <PATH>` — force a project scope other than the nearest Git root.
-- `--cwd <PATH>` — run the job in a directory other than the invocation directory.
-- `--state-dir <PATH>` — override where state is stored (default: OS state directory).
+`list` returns only jobs in the current project.
 
-## Job names and keys
+## Lifetime
 
-Job names must match `[a-z0-9][a-z0-9._-]{0,63}`. Use descriptive lowercase names like `dev-server`, `python-repl`, or `test-watch`.
+A job lives as long as its Zellij session and its owning `pi` process. It survives turns and `/new`. When the owning `pi` process exits, or the last job is stopped, the session and its jobs are removed.
 
-Key names: `Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `F1` through `F12`, `Ctrl+<ASCII letter>`, and `Alt+<single printable ASCII character>`.
+For a worker-lifetime process that must outlive `pi`, use `--global`:
+
+```bash
+agent-terminal --global start worker -- ./worker
+agent-terminal --global list
+agent-terminal --global stop worker
+```
+
+`--global` is the only shared namespace. It survives `pi` exit and is removed when stopped, when idle for 60 seconds, or when the worker stops.
 
 ## Output
 
-Every response is a flat JSON object. Successful start and read responses include their data at the top level:
+Every response is one JSON object. Successful data is nested under `data`:
 
 ```json
-{"status":"ok","state":"running"}
-{"status":"ok","state":"running","screen":"...","truncated":false}
+{"status":"ok","data":{"job":"dev"}}
+{"status":"ok","data":{"jobs":[{"name":"dev"}]}}
+{"status":"ok","data":{"job":"dev","screen":"...","truncated":false}}
+{"status":"ok","data":{"job":"dev"}}
+{"status":"error","code":"job_not_found","message":"job \"dev\" was not found"}
 ```
 
-Send, press, and stop acknowledge only success:
+`read` returns the newest 200 lines or 32 KiB of the pane scrollback. For complete logs and exit status, capture them inside the job command:
 
-```json
-{"status":"ok"}
+```bash
+agent-terminal start build -- sh -c 'make > .agent-terminal-build.log 2>&1; echo exit:$? >> .agent-terminal-build.log'
 ```
 
-List returns job summaries:
+Then `read` or `grep` the log file. An exited pane disappears, so its exit status must be written to a file if you need it.
 
-```json
-{"status":"ok","jobs":[{"job":"dev-server","state":"running"}]}
-```
+## Recovery codes
 
-Errors are also flat:
-
-```json
-{"status":"error","code":"job_not_found","message":"job \"missing\" was not found"}
-```
-
-The JSON `code` and `message` are authoritative. Nonzero exit codes only mean recovery is needed, not a crash.
-
-## Lifecycle
-
-| State | Meaning |
-|---|---|
-| `running` | The job accepts input. |
-| `exited` | The process finished; `exit_code` is present; the screen remains readable until stopped. |
-
-Common recovery codes:
-
-- `job_exists` — read or stop the existing job instead of starting another.
-- `job_not_found` — run `list` and check the project scope.
-- `job_not_running` — read the job before sending more input.
-- `lock_busy` — do useful work and retry once later; do not spin.
-- `delivery_uncertain` — read the job before deciding whether to resend.
-- `zellij_not_found`, `zellij_failed`, `state_io`, `state_corrupt` — resolve the terminal or state-store problem before retrying.
-
-The `screen` field on `read` is a bounded visible snapshot (newest 200 lines, 32 KiB), not a complete log. For complete logs, redirect output inside the job command.
-
-## Scope isolation
-
-Each pi session gets its own terminal scope. pi exposes `PI_SESSION_ID` to Bash commands, and the CLI uses it when `AGENT_TERMINAL_SCOPE` is not set. The model does not manage scoping. `AGENT_TERMINAL_SCOPE` is optional and overridable: to share terminal state across agents (for example a parent and a subagent working on the same task), each agent sets it to the same task-specific value rather than a full session id — for example `20260803-fix-auth-refactor` — so all of them land in one intended scope without coupling to any specific session.
+- `job_exists` - read or stop the existing job.
+- `job_not_found` - run `list`; the job may have exited or the project may differ.
+- `lock_busy` - another operation is in progress; retry once later.
+- `no_pi_ancestor` - run from `pi`, or use `--global`.
+- `zellij_not_found`, `zellij_failed`, `state_io` - resolve the terminal or runtime problem before retrying.
 
 ## Rules
 
-1. Use `start` once per job name. Duplicate starts return `job_exists`.
-2. `read` before sending input when you do not already know the prompt or state.
-3. State, not screen activity, determines completion. An unchanged screen does not mean the job is finished.
-4. Use `stop` for cleanup. A successful `stop` is authoritative.
-5. Use `list` only after context loss, cancellation, or when ownership is uncertain.
-6. After `exited`, call `stop` to free resources.
-
-## Cancellation
-
-If a Bash call is cancelled mid-operation, reconcile with `list` or `read` before continuing. Do not automatically replay cancelled `send` or `press`; being issued does not prove the terminal consumed the input. `read` and `list` are safe to retry.
+1. `read` before resending when you do not know the prompt.
+2. `stop` a job when you are done with it. The last stop removes the session.
+3. A job command must stay in its pane. Do not use `nohup`, `setsid`, `tmux`, or daemonize it; use `--global` for long-lived work.
+4. Do not run programs that rewrite the terminal title (`tmux`, `screen`, prompt themes that set the title). The job is found by its pane title and would become unreachable.
+5. Do not background children from an interactive shell or REPL inside a job (`cmd &` after the job command has started). Only the job command itself may background a child.
+6. An exited job is gone from `list` and `read` returns `job_not_found`. Read output before a short command exits.
+7. Use `list` after context loss, cancellation, or when ownership is unclear.
+8. Do not replay a cancelled `send` or `press`; read first.
 
 ## Why not raw Zellij?
 
-Raw `zellij` commands expose sessions, pane IDs, and screen text. An agent using them directly would have to track pane ownership, parse unstructured output, handle concurrent calls safely, and recover from its own crashes. `agent-terminal` hides that behind logical job names, a JSON envelope, bounded screen output, atomic state, and ownership reconciliation.
+Raw Zellij exposes session names, pane IDs, and unstructured screen text. `agent-terminal` provides stable job names, a small JSON interface, bounded screen output, project scoping, and automatic cleanup.

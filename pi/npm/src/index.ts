@@ -3,9 +3,9 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import {
-  getAgentDir,
   type ExtensionAPI,
   type ExtensionFactory,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 
 type CreateExtensionInput = {

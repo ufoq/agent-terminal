@@ -1,390 +1,216 @@
-# agent-terminal design
+# agent-terminal 0.2.0 design
 
-Status: Rust CLI implemented; pi skill is CLI-oriented (invokes the binary through Bash).
+0.2.0 supports pi only. The interaction surface is a Rust CLI driven from Bash, plus the
+`agent-terminal` skill. There is no native pi tool, no MCP server, and no extra command.
 
-## 1. Product rule
+## Goals
 
-The agent understands **jobs**, not Zellij.
+The tool helps an agent keep terminal work across turns. It must be simple, reliable, and
+isolated enough that agents do not lose control of their own jobs. It must not leak
+processes or state during long sessions.
 
-A job is a named, project-scoped terminal process that can outlive one tool call, expose its current screen and exit state, accept later input, and be cleaned up explicitly. Sessions, tabs, panes, focus, sockets, and Zellij IDs are private implementation details.
+Isolation is operational, not a security boundary. The worker is already sandboxed, and
+any agent with Bash can reach the filesystem and processes. Scopes prevent accidental
+collisions and wrong cleanup, not deliberate interference.
 
-The wrapper is worthwhile because raw `zellij` commands force the agent to track pane ownership, parse unstructured output, handle concurrent calls safely, and recover from its own crashes. `agent-terminal` hides that behind logical job names, a JSON envelope, bounded screen output, atomic state, and ownership reconciliation.
+## Ownership
 
-The interface is optimized for coding agents first and direct CLI users second.
-
-## 2. Standalone CLI
-
-The Rust binary exposes the same six operations as subcommands:
-
-```text
-agent-terminal [GLOBAL OPTIONS] start <JOB> [--cwd <PATH>] -- <PROGRAM> [ARG...]
-agent-terminal [GLOBAL OPTIONS] read <JOB>
-agent-terminal [GLOBAL OPTIONS] send <JOB> [--no-submit] -- <TEXT>
-agent-terminal [GLOBAL OPTIONS] press <JOB> -- <KEY>...
-agent-terminal [GLOBAL OPTIONS] stop <JOB>
-agent-terminal [GLOBAL OPTIONS] list
-```
-
-Global options:
+The CLI walks `/proc` from its own process to the root:
 
 ```text
---project <PATH>   Project identity and state scope; defaults to the nearest Git root,
-                   or the current directory when not inside a Git repository
---pretty           Pretty-print JSON; compact JSON is the default
--v, -vv, -vvv      Stderr diagnostic level
---state-dir <PATH> Override state root for testing or isolated use
+pi
+└── bash tool
+    └── agent-terminal
 ```
 
-`start` additionally accepts `--cwd <PATH>`; it defaults to the invocation directory.
+- A process is pi when `/proc/<pid>/comm` is `pi`, its executable basename is `pi`, or its
+  argv contains a `pi` path.
+- The nearest pi ancestor is the owner.
+- Every pi ancestor, nearest to root, is kept for cleanup.
+- Identity is `(pid, starttime)` from `/proc/<pid>/stat`. A zombie, missing process, or
+  changed starttime is dead.
+- No pi ancestor is an error that points at `--global`.
 
-The core CLI takes an argv after `--`; it never parses a shell string. Defaulting `--project` to the Git root and `start --cwd` to the invocation directory removes the need for the agent to derive and pass these values on every call.
+Ownership files contain one `pid:starttime` per ancestor and are written before the
+Zellij session is created. They are not rewritten while the owner is alive.
 
-Exit codes:
+## Scope
 
-| Code | Meaning |
-|---|---|
-| `0` | Successful operation, including an empty list |
-| `1` | `job_exists`, `job_not_found`, `job_not_running`, `delivery_uncertain`, or `lock_busy`: a valid request that the agent can recover from |
-| `2` | `invalid_input`, `zellij_not_found`, `zellij_failed`, `state_io`, or `state_corrupt`: request/controller/backend failure |
+A scope is the project digest plus the owner identity. The project is the nearest `.git`
+ancestor, or the invocation directory. Parent pi, every subagent child pi, and siblings
+therefore have separate job namespaces automatically.
 
-## 3. JSON contract
+`--global` selects a shared worker-lifetime namespace. It has no owner watcher. It is
+removed by an explicit stop, after 60 seconds with no jobs, or when the worker stops.
 
-Stdout contains exactly one JSON object plus a newline. Diagnostics go only to stderr. Argument parsing and validation use the same error envelope; `--help` and `--version` are the only plain-text exceptions.
+## Jobs
 
-Success:
+A job is a Zellij pane titled `agent-terminal:job:<name>`. There is no persisted job
+registry and no `state.json`. `list` reads pane titles; `read`, `send`, `press`, and
+`stop` resolve the pane directly.
 
-```json
-{"status":"ok","state":"running"}
-```
+Job names match `[a-z0-9][a-z0-9._-]{0,63}`.
 
-Error:
+Jobs are created with `--close-on-exit`, so an exited process leaves no pane, no job
+record, and no stale state. A completed job simply disappears. The skill tells the agent
+to read output before the process exits and to stop jobs it no longer needs.
 
-```json
-{"status":"error","code":"job_not_found","message":"No job named 'api'."}
-```
+## Sessions and keeper
 
-### Operation data
-
-`start` returns reconciled state, never an assumed state:
-
-```json
-{"status":"ok","state":"running"}
-```
-
-```json
-{"status":"ok","state":"exited","exit_code":7}
-```
-
-`read` while running:
-
-```json
-{"status":"ok","state":"running","screen":"ready on :3000\n","truncated":false}
-```
-
-`read` after exit:
-
-```json
-{"status":"ok","state":"exited","exit_code":1,"screen":"2 tests failed\n","truncated":false}
-```
-
-Successful text and key dispatch mean only that input was issued after an immediately preceding ownership/running check:
-
-```json
-{"status":"ok"}
-```
-
-`stop` returns a unit acknowledgement:
-
-```json
-{"status":"ok"}
-```
-
-`list` returns:
-
-```json
-{"status":"ok","jobs":[{"job":"dev-server","state":"running"},{"job":"tests","state":"exited","exit_code":1}]}
-```
-
-Optional-field rules are fixed: `exit_code` appears only for `exited`; `screen` is always present on successful `read`; `truncated` indicates whether output exceeded the 200-line or 32 KiB bound.
-
-## 4. Job semantics
-
-### Identity
-
-- `job` is the only public handle.
-- Names match `[a-z0-9][a-z0-9._-]{0,63}`.
-- Names are unique within one canonical project root.
-- A duplicate start returns `job_exists`, even if the prior job exited. The agent must read or stop the existing job first.
-- Pane and session IDs never appear in normal responses.
-
-### States
-
-Only two persisted/live states are exposed:
-
-| State | Meaning |
-|---|---|
-| `running` | The owned terminal command has not exited |
-| `exited` | The command exited; `exit_code` is present and the pane remains held for capture |
-
-There is no public `starting` state because `start` returns only after the pane ID is acquired, state is durable, and live state is reconciled. A fast command may therefore make `start` return `exited` with `exit_code`. There is no separate `failed` state; failure is `exited` with a non-zero `exit_code`. Stopped jobs are removed rather than retained as tombstones.
-
-Job panes are always launched in held-on-exit mode by omitting Zellij's `--close-on-exit`; preserving fast exit state and screen is an invariant, not a timing assumption.
-
-### Read
-
-- Reconcile registry state with `list-panes --json` first.
-- Capture plain-text screen and scrollback through a unique, initially absent dump path.
-- Require the current invocation to create the dump file; otherwise return `zellij_failed` rather than empty or stale output.
-- Return the newest at most 200 lines and 32 KiB.
-- Set `truncated=true` when either limit was applied.
-- The screen is rendered PTY content, not a canonical stdout/stderr log.
-- An unchanged screen never implies completion.
-
-### Input
-
-- Accept input only for a known `running` job.
-- Validate session ownership plus terminal ID, non-plugin type, and the nonce-bearing pane title immediately before sending because Zellij silently succeeds for unknown pane IDs and plugin/terminal numeric IDs can collide.
-- Serialize state lookup and input under the per-project lock.
-- Use bracketed paste for text and `send-keys` for named keys.
-- Success means input was issued after validation, not that the application consumed it. If the job disappears between validation and delivery, the CLI returns `delivery_uncertain`; the agent must read the job before deciding whether to resend.
-
-Public key names use one controller-owned grammar, independent of Zellij spelling: `Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `F1` through `F12`, `Ctrl+<ASCII letter>`, and `Alt+<ASCII character>`. The controller validates and translates these names.
-
-### Stop
-
-- Stop sends Ctrl+C, waits up to 5 seconds for the command to exit, then force-closes the pane and removes the job record after the pane is absent. It auto-escalates; the caller does not select a mode.
-- `exited`: close the held pane and remove the record.
-- stale registry entry (pane already gone): reconcile internally to `job_not_found`.
-- unknown name: return `job_not_found`; never silently accept a typo.
-
-The post-close absence check is required because Zellij reports success for an unknown pane ID. It is not generic defensive verification. Stop auto-escalates: it sends Ctrl+C, waits up to 5 seconds for graceful exit, then force-closes the pane and removes the job record after confirming pane absence.
-
-## 5. Error codes
-
-Public stable codes:
-
-| Code | Agent response |
-|---|---|
-| `job_exists` | Read or stop the existing job; do not start a duplicate |
-| `job_not_found` | List jobs and correct the name |
-| `job_not_running` | Read the exited job; do not send input |
-| `delivery_uncertain` | Read the job before deciding whether to resend (send/press only) |
-| `invalid_input` | Correct the named argument |
-| `lock_busy` | Retry the same operation |
-| `zellij_not_found` | Install Zellij 0.44.3 or later |
-| `zellij_failed` | Report the terminal backend operation failed; detailed backend context stays in logs, never in the public message |
-| `state_io` | Report the state operation failed; the filesystem path (which embeds the scope digest) stays in logs, never in the public message |
-| `state_corrupt` | Do not overwrite unreadable state automatically; do not publish the corrupt file's path |
-
-Error messages are concise and actionable. Rust backtraces, command dumps, pane IDs, and raw Zellij JSON never enter the model response.
-
-## 6. Ownership and persistence
-
-One controller-owned Zellij session exists per canonical project root. Its stable name combines a project digest with a persisted random ownership nonce. Jobs are created as held-on-exit panes and titled `agent-terminal:<job>:<operation-nonce>`.
-
-State lives under the platform state directory:
+Each project in an owner scope has one Zellij session:
 
 ```text
-<state-root>/
-└── scopes/<scope-digest>/
-    ├── bootstrap.lock
-    └── projects/<project-digest>/
-        ├── state.json
-        └── state.lock
+at-<project-digest-12>-<scope-digest-12>
 ```
 
-The permanent per-project sibling lock is held across each complete read-modify-Zellij-write operation. Its acquisition is non-blocking: contention returns `lock_busy` immediately. A per-scope bootstrap lock serializes only Zellij session creation/readiness within that scope, avoiding backend startup contention while keeping later job operations independent. Waiting for that lock is included in the same ten-second bootstrap deadline. The empty `bootstrap.lock` file intentionally persists after jobs exit so later processes reuse the same synchronization inode; it contains no job data. Every individual Zellij invocation has a two-second timeout. Interrupted `pending_start` adoption also has a ten-second overall deadline; expiry returns `zellij_failed` while leaving `pending_start` durable for later reconciliation or `stop`. Graceful stop likewise has a fifteen-second overall deadline including its five-second exit wait, so it monopolizes the project lock only for a bounded interval.
+Global sessions are `at-global-<project-digest-12>`.
 
-`state.json` is replaced atomically through a same-directory temporary file. It stores project root, ownership nonce, session name, job name, operation nonce, full pane identity, cwd, argv, creation time, and internal mutation phase. Runtime state is derived from Zellij.
-
-State mutations use two internal phases that are never exposed as job states:
-
-- `pending_start` is durable before session/pane creation. Reconciliation adopts only a non-plugin pane whose session, terminal ID, and nonce-bearing title all match. Authoritative disappearance after a pane identity was acquired cleans the record and surfaces `job_not_found`. If no pane identity appears by the adoption deadline, return `zellij_failed` and retain `pending_start` for later reconciliation or `stop`.
-- `pending_remove` is durable before pane closure. Reconciliation retries closure when the owned pane remains. For the last job, the phase stays durable until both the job pane and the owned keeper-only session are absent; session-deletion failure returns `zellij_failed` and preserves the phase. Only then does reconciliation remove the job entry and clear the phase.
-
-This ordering keeps a pane created during an interrupted controller process or cancelled agent call reconcilable by its durable nonce. State is written before the session exists, so missing or corrupt state never authorizes targeting a pre-existing session.
-
-The controller supplies a minimal private Zellij config and layout so headless startup does not depend on user configuration. It bootstraps with `attach --create-background` and a keeper pane titled with the ownership nonce, then polls within the ten-second startup deadline until that pane is visible before creating a job. Plugin panes are always ignored because Zellij can retain a hidden plugin with the same numeric ID as a terminal pane. Last-job cleanup deletes the owned session inside `pending_remove` before state is cleared.
-
-## 7. Internal architecture derived from the interface
-
-The standalone project is one Rust crate with a small library and binary:
+Session creation uses a private layout containing one pane:
 
 ```text
-src/
-├── main.rs        parse, tracing, one response, exit code
-├── cli.rs         six subcommands and global options
-├── error.rs       typed domain errors and stable codes
-├── output.rs      JSON envelopes; sole stdout writer
-├── paths.rs       project/config/state path resolution; Git-root default
-├── domain.rs      job/session/pane newtypes, key grammar, bounded screen
-├── config.rs      private Zellij config/layout file materialization
-├── controller.rs  job lifecycle orchestration behind a testable trait
-├── reconcile.rs   pending-start and pending-remove reconciliation
-├── telemetry.rs   tracing initialization
-├── state.rs       re-exports from the state module tree
-├── state/         typed registry, lock, atomic persistence
-├── zellij.rs      re-exports from the zellij module tree
-├── zellij/        subprocess backend behind a testable trait
-└── commands/      start, read, send, press, stop, list
+agent-terminal:keeper
 ```
 
-Rules:
-
-- synchronous `std::process::Command`; no async runtime or daemon;
-- argv slices only; no formatted shell commands in Rust;
-- `thiserror` for typed errors throughout the library and binary; no `anyhow`;
-- no `unwrap`, `expect`, `panic`, `Box<dyn Error>`, or stdout writes in library code;
-- newtypes for job, project, session, and terminal-pane identity;
-- compact serde JSON by default, tracing to stderr;
-- Zellij 0.44.3 is the minimum tested version.
-
-## 8. Verification contract for implementation
-
-1. Start/read/stop: start a dev server, read `running` plus its ready screen, stop it, and prove the pane/session is cleaned up.
-2. Interactive text: start a prompt or REPL, send literal text with submission, and read the resulting screen.
-3. Named keys: start an interactive program, press named navigation keys, and read the changed screen.
-4. Fast failure: start a command that exits non-zero immediately and read `exited`, exact `exit_code`, and last screen.
-5. Recovery: distinguish duplicate name, unknown name, exited job, and an externally closed pane (reconciles to `job_not_found`).
-6. Isolation: run same-named jobs in two project roots without state/session collision.
-7. Crash recovery: terminate the controller between durable pending state and each Zellij mutation, then prove the next operation adopts or removes exactly the nonce-matched pane.
-
-Real-Zellij tests use isolated HOME/XDG directories and the installed Zellij binary. Unit tests use a fake backend only for deterministic domain/error paths.
-
-## 9. Explicit non-goals
-
-- No runner script, persistent output log, event subscription, or notification service.
-- No `wait`, retry, restart, pause, resume, attach, cleanup, or raw Zellij command.
-- No daemon, HTTP, socket, MCP server, Zellij WASM plugin, or database.
-- No arbitrary user-pane control or shared-session ownership.
-- No automatic secret redaction; commands and screen output are inherently visible in the terminal.
-
-## 10. Project and distribution
-
-- Standalone Rust project, independent of `myb` conventions.
-- MIT license.
-- Normal Cargo workflow: `cargo build --release` and `cargo install --path .`.
-- Release archives may be added later; they are not part of the initial implementation.
-
-## 11. Evidence used
-
-- Anthropic agent-tool design principles: <https://www.anthropic.com/engineering/writing-tools-for-agents>
-- Zellij programmatic control: <https://zellij.dev/documentation/programmatic-control.html>
-- Zellij CLI actions: <https://zellij.dev/documentation/cli-actions.html>
-
-The main borrowed pattern is Claude Code's split between background start, output/state read, and stop. The design adds only the input and recovery operations required for persistent interactive PTY work.
-
-## 12. Cross-agent scoping
-
-The CLI uses an invisible `AGENT_TERMINAL_SCOPE` environment variable to isolate terminal state across concurrent agent sessions. The pi adapter does not inject it; pi's native `PI_SESSION_ID` is the default. The variable is optional and overridable: agents that need to share terminal state — for example a parent and a subagent working on the same task — each set it to the same task-specific value (such as `20260803-fix-auth-refactor`) so they land in one intended scope without coupling to any specific session. The plugin honors an explicit value unchanged and only auto-injects the session id when the variable is unset.
-
-State is stored under a scoped directory tree:
+The keeper is the hidden command:
 
 ```text
-<state-root>/scopes/<scope-digest>/projects/<project-digest>/
+agent-terminal __keeper <owners> <ready> <zellij> <lock>
 ```
 
-Each scope also gets a private Zellij socket namespace under `<tmp>/agent-terminal-<scope-digest>`. Concurrent agents running in separate agent sessions never see each other's jobs, even when they operate on the same project root. Session identity, pane ownership, and locks are all contained within one scope.
+For `--global`, `<owners>` and `<ready>` are `-`.
 
-When `AGENT_TERMINAL_SCOPE` is unset, the CLI falls back to `PI_SESSION_ID` (pi's native per-session identity) and only then to the literal scope `standalone`. `standalone` is the default when running the binary directly outside of an agent session.
+The keeper:
 
-The model does not manage scoping. It refers to jobs by their names and relies on the plugin to set the scope behind the scenes. The same job name may be used independently in different scopes without collision.
+1. Reads the owner chain once.
+2. Writes `ready` with its pane id.
+3. Checks owner liveness about once per second.
+4. When any owner or ancestor is dead, runs `zellij kill-session` for its own session.
+5. Never kills by PID and never deletes state.
 
-## 13. pi integration
+If the owners file is missing or malformed, the keeper kills its own session. It cannot
+verify ownership, and a session it cannot attribute must not outlive it. The CLI sweep
+removes the state afterwards.
 
-The pi adapter ships as two npm packages built by the pi workspace over the shared
-build library `scripts/npm-build-lib.mjs` (which keeps the Zellij version and SHA-256
-pins in one place):
+The keeper also removes an idle session after 60 seconds with no job panes, under the
+project lock and only when there are no unknown panes. A non-global stop of the last job
+removes the session immediately.
 
-| package | contents |
-|---|---|
-| `@ufoq/pi-agent-terminal` | adapter, static Linux x86_64 `agent-terminal` binary, skill; host must have Zellij on `PATH` |
-| `@ufoq/pi-agent-terminal-bundle-zellij` | same, plus a pinned Zellij binary |
+## Start order
 
-Pi packages declare their extension entry point and skill directory in the `pi` manifest
-field (`"pi": { "extensions": ["./dist/index.js"], "skills": ["./skills"] }`), which
-pi honors when the package is loaded through `pi install npm:@ufoq/...` (or
-project-local `pi install -l`) or for a one-shot run through `pi -e npm:@ufoq/...`.
-Pi's `~/.pi/agent/extensions/` auto-load directory is extension-only and does not read
-package `pi.skills` metadata. The Rust CLI, skill content, bundled binaries, and JSON
-protocol are shared with direct CLI users.
+```text
+lock project
+sweep
+write owners (owner mode)
+write config.kdl and layout.kdl
+create Zellij session and keeper pane
+wait for keeper pane and ready
+create job pane with --name and --close-on-exit
+```
 
-The build pipeline compiles the Rust binary once (`x86_64-unknown-linux-musl`), compiles
-the adapter with `bun build`, and copies the binary, the dist, and the skill into each
-package. The skill lives at `pi/skills/` and is copied verbatim by `copySkillToPackage`.
-The bundle variant's Zellij binary is content-pinned by SHA-256 and cached under
-`~/.cache/agent-terminal-zellij` for offline rebuilds; both bundle entrypoints `await`
-`ensureZellij` before finishing, so success is never reported before the pinned binary
-is installed and verified.
+A crash after session creation leaves a session with only a keeper; the next command's
+sweep removes it. A crash after pane creation leaves a normal job pane.
 
-### pi adapter
+## Sweep
 
-The pi adapter never touches the bash tool. Pi's native bash keeps its stock definition,
-approval, and concurrency by construction — the adapter neither replaces the tool nor
-wraps its execution. On load it guards the platform (`linux`) and then the architecture
-(`x64`) first, returning early on either mismatch; next it registers the compatibility
-flags; only the PATH mutation is gated behind the bundled-binary check:
+Sweep runs before every command, under the project lock. Projects in other scopes or
+with other digests are inspected only after taking their own non-blocking project lock;
+busy targets are skipped.
 
-1. Registers the compatibility flags `--cwd` and `--no-lsp`, which pi does not provide
-   natively. These are honest compatibility registrations: the adapter makes no behavior
-   claims, and `--cwd` no longer feeds a bash tool (bash's working directory is the
-   invocation directory). `--no-context-files` is native to pi and is not registered.
-2. Checks the bundled `agent-terminal` executable; if it is missing or not executable, the
-   adapter logs a diagnostic and returns before mutating PATH.
-3. Mutates `process.env.PATH` with the ordering `bundledDirs : piManagedBin : rest`
-   (deduplicated). `piManagedBin` is `join(getAgentDir(), "bin")` — the SDK's root
-   `getAgentDir` export, which honors `PI_CODING_AGENT_DIR`; the SDK does not export
-   `getBinDir`. Because pi's `getShellEnv` live-spreads `process.env` and only prepends
-   `~/.pi/agent/bin` when it is absent, the explicit insertion makes the managed-bin check
-   pass and keeps the bundled directories first — a stale `agent-terminal`/`zellij` in the
-   managed bin can never shadow the bundled ones.
+- Dead owner scope: kill the project session, verify absence, remove the project
+  directory.
+- Current live owner: if the session is absent, remove stale state; if the session has no
+  job panes and no unknown panes, kill it and remove state.
+- Global: remove an idle session and its project state.
+- Unknown non-plugin panes prevent live-owner recovery and idle cleanup. Dead-owner
+  cleanup may remove the session without inspecting panes.
+- Scratch is cleared per project.
 
-The adapter registers no skill handler. The skill is discovered statically by the package
-resource loader: the `pi.skills` manifest entry (`["./skills"]`) exposes it for
-package-root loads (`-e <package root>` or `npm:`), while loading the dist file directly
-(`-e <package>/dist/index.js`) is extension-only and intentionally does not discover the
-skill.
+The per-project lock lives at `<runtime>/locks/<project>.lock`, outside every scope
+directory. It is never deleted, so a later process opens the same inode. A short-held
+`<runtime>/.meta.lock` serializes project-directory creation and empty-scope pruning, so
+one project cannot remove a shared parent while another project is being prepared.
 
-Scope: pi injects `PI_SESSION_ID` into every bash child natively, so per-session isolation
-needs zero extension code. The Rust CLI resolves `AGENT_TERMINAL_SCOPE` → `PI_SESSION_ID`
-→ `standalone` (empty/whitespace values treated as absent at every step), so pi gets
-per-session isolation even when the extension is not loaded.
+## Config isolation
 
-### e2e gates
+Zellij never reads or writes the user's real configuration.
 
-`scripts/e2e-pi-local.sh` is the deterministic release gate for the pi integration. It
-builds the pi bundle, starts the fixture provider, and drives the full lifecycle through a
-real pi binary. The first Bash call is `printenv PI_SESSION_ID`, asserted equal to the
-session header id.
+- `ZELLIJ_CONFIG_DIR` points at the private project directory containing `config.kdl`.
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME` point inside the private
+  runtime root.
+- `ZELLIJ_CONFIG_FILE` is removed from the child environment.
+- `--config` is not passed.
 
-Because pi does not read a config file for custom providers, the fixture provider is
-registered through a small provider extension file loaded with `-e` alongside the
-agent-terminal extension.
+Private directories are `0700`; private files are `0600`.
 
-`scripts/e2e-two-session.sh` is a deterministic two-session isolation gate: two fixture
-servers (`AGENT_TERMINAL_FIXTURE_HOLD=1`, holding jobs open for
-`AGENT_TERMINAL_FIXTURE_HOLD_SECS`, default 45 seconds) drive two concurrent pi runs
-against one shared project directory, state root, and Zellij socket dir. It asserts the two
-session header ids differ, direct-CLI cross-checks (`agent-terminal list`/`read server`)
-under each scope see exactly their own job and pane during the hold window, and both
-sessions finish the full lifecycle with empty final lists. `AGENT_TERMINAL_JOB_NAME` keeps
-both runs on the same job name. This exercises the scope mechanism: pi's native
-`PI_SESSION_ID` → Rust CLI fallback.
+## Runtime root
 
-`scripts/e2e-skill-discovery.sh` is a skill-discovery smoke: with
-`AGENT_TERMINAL_FIXTURE_SKILL_PROBE=1`, the fixture inspects the first provider request's
-messages and asserts the skill's DESCRIPTION phrase ("Run persistent or interactive
-terminal jobs through a simple Zellij wrapper") is present. Pi's package resource loader
-reads the declared `pi.skills` directory for a package-root load (`-e <package root>`).
-This proves real pi static skill discovery end to end: discovery reaches the model request
-as skill metadata.
+`--state-dir` wins. Otherwise:
 
-In addition to the deterministic gates, `scripts/e2e-pi-real.sh` is an **optional,
-local-only** real-model e2e: it is not a release gate, and it drives the same lifecycle
-through the real pi binary with a real model from the user's own pi config, loading the pi
-package. It projects only the selected provider's `models.json` and `auth.json` entries
-plus a minimal `settings.json` into a sandbox config directory (`PI_CODING_AGENT_DIR`),
-which is always deleted on exit, and runs the shared harness with
-`AGENT_TERMINAL_VERIFY_MODE=real` so the verifier's relaxed real-mode checks apply — the
-`E2E_SUCCESS` marker, a scope probe, and up to 8 tool-call attempts for observational
-`read`/`list` milestones — instead of the strict fixture transcript matching.
+```text
+$XDG_RUNTIME_DIR/agent-terminal
+```
+
+or
+
+```text
+/tmp/agent-terminal-<uid>
+```
+
+The root must be a real directory owned by the effective uid. Symlinks are rejected and
+the mode is set to `0700`.
+
+## Locking
+
+One lock per project, acquired for the whole command, with 50 ms retries up to 30 seconds.
+Contention returns `lock_busy` after the budget. The lock is not used to protect Zellij
+reads; it serializes cleanup and mutations.
+
+## CLI and output
+
+Six commands: `start`, `read`, `send`, `press`, `stop`, `list`.
+
+- `start` takes `--cwd`, only on `start`.
+- `send` always submits with Enter.
+- `press` sends one key.
+- `--project`, `--state-dir`, `--global`, `--pretty`, and `-v` are global options.
+
+Every response is one JSON object with `status: ok|error`, stable error codes, and no
+state paths.
+
+`read` returns the newest 200 lines or 32 KiB, whichever is smaller, with `truncated`.
+
+## Subagents
+
+No coupling to `pi-mini-subagents`.
+
+```text
+parent pi
+└── child pi
+    └── bash
+        └── agent-terminal
+```
+
+- Each child pi is its own owner and gets its own scope.
+- The child keeper watches the child and all higher pi ancestors, so a parent crash also
+  cleans child jobs.
+- `subagent remove` kills the child pi; its keeper removes the child session.
+- Parent and siblings cannot see each other's attached jobs.
+- `--global` is the only deliberate sharing mechanism.
+
+## Deliberate non-goals
+
+- No omp or OpenCode support.
+- No session-id or environment-variable scope.
+- No persisted job registry.
+- No daemon or separate garbage collector.
+- No public cleanup command.
+- No socket-directory colocation.
+- No per-child scope injection.
+- No `status` or `new` aliases.
+- No native tool or MCP.
+
+## Residuals
+
+A job that deliberately double-forks or calls `setsid` can escape the Zellij session.
+Strict containment needs cgroups, PID namespaces, or systemd, which this worker does not
+provide. The supported contract is that job commands stay in their pane.

@@ -3,22 +3,19 @@ use std::io::{self, Write as _};
 use serde::Serialize;
 use thiserror::Error as ThisError;
 
-use crate::{
-    domain::{JobName, JobState},
-    error::Error,
-};
+use crate::{domain::JobName, error::Error};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Ok(CommandData),
+    Ok { data: CommandData },
     Error { code: &'static str, message: String },
 }
 
 impl Response {
     #[must_use]
     pub const fn ok(data: CommandData) -> Self {
-        Self::Ok(data)
+        Self::Ok { data }
     }
 
     #[must_use]
@@ -43,35 +40,34 @@ pub enum CommandData {
 
 #[derive(Debug, Serialize)]
 pub struct StartData {
-    pub state: JobState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
+    pub job: JobName,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ReadData {
-    pub state: JobState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
+    pub job: JobName,
     pub screen: String,
     pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct SendData;
+pub struct SendData {
+    pub job: JobName,
+}
 
 #[derive(Debug, Serialize)]
-pub struct PressData;
+pub struct PressData {
+    pub job: JobName,
+}
 
 #[derive(Debug, Serialize)]
-pub struct StopData;
+pub struct StopData {
+    pub job: JobName,
+}
 
 #[derive(Debug, Serialize)]
 pub struct JobSummary {
-    pub job: JobName,
-    pub state: JobState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
+    pub name: JobName,
 }
 
 #[derive(Debug, Serialize)]

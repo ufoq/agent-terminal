@@ -1,9 +1,8 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import { createExtension } from "../npm/src/index"

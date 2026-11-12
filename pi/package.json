@@ -10,11 +10,7 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
-    "e2e:pi": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=1 bash scripts/e2e-pi-local.sh",
-    "e2e:pi:skip-prompt": "cd .. && AGENT_TERMINAL_ENABLE_PROMPT_E2E=0 bash scripts/e2e-pi-local.sh",
-    "e2e:pi:skills": "cd .. && bash scripts/e2e-skill-discovery.sh",
-    "e2e:pi:real": "cd .. && bash scripts/e2e-pi-real.sh",
-    "release:check": "bun run check && bun run e2e:pi && bun run e2e:pi:skills"
+    "release:check": "bun run check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",

@@ -1,132 +1,139 @@
-use std::{path::PathBuf, str::FromStr as _, time::Duration};
+use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 use crate::{
-    controller::Controller,
+    commands,
     domain::{JobName, Key},
     error::Error,
     output::CommandData,
-    paths::{ProjectPaths, find_project_root, resolve_scope},
-    state::StateStore,
-    zellij::ZellijCli,
 };
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "agent-terminal",
-    version,
-    about = "Agent-native terminal job control backed by Zellij"
-)]
+#[command(name = "agent-terminal", version, about = "Agent-native terminal jobs")]
 pub struct Cli {
-    #[arg(long, global = true)]
+    /// Project root; defaults to the nearest Git root of the current directory.
+    #[arg(long, global = true, value_name = "PATH")]
     pub project: Option<PathBuf>,
-    #[arg(long, env = "AGENT_TERMINAL_STATE", global = true)]
+    /// Runtime state directory (tests and isolated runs).
+    #[arg(long, global = true, env = "AGENT_TERMINAL_STATE", value_name = "PATH")]
     pub state_dir: Option<PathBuf>,
+    /// Worker-lifetime namespace for jobs that outlive pi.
+    #[arg(long, global = true)]
+    pub global: bool,
+    /// Pretty-print JSON output.
     #[arg(long, global = true)]
     pub pretty: bool,
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    /// Increase log verbosity.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
     #[command(subcommand)]
-    pub command: CliCommand,
+    pub command: Command,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum CliCommand {
-    Start(StartArgs),
-    Read(JobArgs),
-    Send(SendArgs),
-    Press(PressArgs),
-    Stop(StopArgs),
+pub enum Command {
+    /// List jobs in this project and scope.
     List,
-}
-
-#[derive(Debug, Args)]
-pub struct StartArgs {
-    pub job: String,
-    #[arg(long)]
-    pub cwd: Option<PathBuf>,
-    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
-    pub command: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct JobArgs {
-    pub job: String,
-}
-
-#[derive(Debug, Args)]
-pub struct SendArgs {
-    pub job: String,
-    #[arg(long)]
-    pub no_submit: bool,
-    #[arg(last = true, required = true)]
-    pub text: String,
-}
-
-#[derive(Debug, Args)]
-pub struct PressArgs {
-    pub job: String,
-    #[arg(required = true, last = true, num_args = 1.., allow_hyphen_values = true)]
-    pub keys: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct StopArgs {
-    pub job: String,
+    /// Start a command in a named job.
+    Start {
+        /// Job name.
+        job: JobName,
+        /// Working directory for the job.
+        #[arg(long, value_name = "PATH")]
+        cwd: Option<PathBuf>,
+        /// Command to run.
+        #[arg(last = true, required = true, num_args = 1.., value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Read the current screen of a job.
+    Read {
+        /// Job name.
+        job: JobName,
+    },
+    /// Send text to a job and submit it with Enter.
+    Send {
+        /// Job name.
+        job: JobName,
+        /// Text to send and submit; multiple words are joined with spaces.
+        #[arg(required = true, num_args = 1.., value_name = "TEXT")]
+        text: Vec<String>,
+    },
+    /// Send one key to a job.
+    Press {
+        /// Job name.
+        job: JobName,
+        /// Key name, or Ctrl+X / Alt+X.
+        key: Key,
+    },
+    /// Stop a job.
+    Stop {
+        /// Job name.
+        job: JobName,
+    },
+    /// Internal keeper (not part of the agent interface).
+    #[command(hide = true, name = "__keeper")]
+    Keeper {
+        owners: PathBuf,
+        ready: PathBuf,
+        zellij: PathBuf,
+        lock: PathBuf,
+    },
 }
 
 pub fn run(cli: Cli) -> Result<CommandData, Error> {
-    let invocation_dir = std::env::current_dir().map_err(|source| Error::StateIo {
-        action: "read current directory",
-        path: PathBuf::from("."),
-        source,
-    })?;
-    let project = match cli.project {
-        Some(project) => project,
-        None => find_project_root(&invocation_dir)?,
-    };
-    let scope = resolve_scope();
-    let paths = ProjectPaths::new(&project, cli.state_dir.as_deref(), &scope)?;
-    let store = StateStore::new(paths.clone());
-    let zellij = ZellijCli::new(
-        PathBuf::from("zellij"),
-        paths.config_file(),
-        paths.zellij_socket_dir(),
-        Duration::from_secs(2),
-    );
-    let controller = Controller::new(store, zellij);
-
-    match cli.command {
-        CliCommand::List => controller.list().map(CommandData::List),
-        CliCommand::Start(args) => {
-            let job = JobName::from_str(&args.job)?;
-            controller
-                .start(&job, args.cwd, args.command, &invocation_dir)
-                .map(CommandData::Start)
-        }
-        CliCommand::Read(args) => {
-            let job = JobName::from_str(&args.job)?;
-            controller.read(&job).map(CommandData::Read)
-        }
-        CliCommand::Send(args) => {
-            let job = JobName::from_str(&args.job)?;
-            controller
-                .send(&job, &args.text, !args.no_submit)
-                .map(CommandData::Send)
-        }
-        CliCommand::Press(args) => {
-            let job = JobName::from_str(&args.job)?;
-            let keys = args
-                .keys
-                .iter()
-                .map(|key| Key::from_str(key))
-                .collect::<Result<Vec<_>, _>>()?;
-            controller.press(&job, &keys).map(CommandData::Press)
-        }
-        CliCommand::Stop(args) => {
-            let job = JobName::from_str(&args.job)?;
-            controller.stop(&job).map(CommandData::Stop)
-        }
+    if let Command::Keeper {
+        owners,
+        ready,
+        zellij,
+        lock,
+    } = &cli.command
+    {
+        crate::keeper::run(owners, ready, zellij, lock)?;
+        return Ok(CommandData::Stop(crate::output::StopData {
+            job: "keeper".parse()?,
+        }));
     }
+    let context =
+        commands::build_context(cli.project.as_deref(), cli.state_dir.as_deref(), cli.global)?;
+    let command = match cli.command {
+        Command::List => CliCommand::List,
+        Command::Start { job, cwd, command } => CliCommand::Start { job, cwd, command },
+        Command::Read { job } => CliCommand::Read { job },
+        Command::Send { job, text } => CliCommand::Send {
+            job,
+            text: text.join(" "),
+        },
+        Command::Press { job, key } => CliCommand::Press { job, key },
+        Command::Stop { job } => CliCommand::Stop { job },
+        Command::Keeper { .. } => {
+            return Err(Error::InvalidInput {
+                message: "internal keeper command cannot be run here".to_owned(),
+            });
+        }
+    };
+    commands::run_command(&context, command)
+}
+
+pub enum CliCommand {
+    List,
+    Start {
+        job: JobName,
+        cwd: Option<PathBuf>,
+        command: Vec<String>,
+    },
+    Read {
+        job: JobName,
+    },
+    Send {
+        job: JobName,
+        text: String,
+    },
+    Press {
+        job: JobName,
+        key: Key,
+    },
+    Stop {
+        job: JobName,
+    },
 }

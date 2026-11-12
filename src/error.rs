@@ -11,12 +11,8 @@ pub enum Error {
     JobExists { job: String },
     #[error("job {job:?} was not found")]
     JobNotFound { job: String },
-    #[error("job {job:?} is not running")]
-    JobNotRunning { job: String },
-    #[error("read the job before deciding whether to resend")]
-    DeliveryUncertain,
-    #[error("pending start for job {job:?} has no owned pane after the adoption deadline")]
-    PendingStartAbsent { job: String },
+    #[error("no pi process was found in the ancestor chain; start a job from pi, or use --global")]
+    NoPiAncestor,
     #[error("another controller operation is in progress")]
     LockBusy,
     #[error("zellij executable was not found")]
@@ -28,74 +24,69 @@ pub enum Error {
     ZellijFailed { message: String },
     #[error("zellij operation timed out after the command was dispatched")]
     ZellijTimeout,
-    #[error("state {action} failed at {path}: {source}")]
+    #[error("state {action} failed: {cause}")]
     StateIo {
         action: &'static str,
         path: PathBuf,
         #[source]
         source: io::Error,
-    },
-    #[error("state file is corrupt at {path}: {source}")]
-    StateCorrupt {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("state serialization failed: {source}")]
-    StateSerialize {
-        #[source]
-        source: serde_json::Error,
+        cause: String,
     },
 }
 
 impl Error {
+    #[must_use]
+    pub fn state_io(
+        action: &'static str,
+        path: impl AsRef<std::path::Path>,
+        source: io::Error,
+    ) -> Self {
+        let path = path.as_ref();
+        let cause = source.raw_os_error().map_or_else(
+            || source.kind().to_string(),
+            |code| format!("{} (os error {code})", source.kind()),
+        );
+        Self::StateIo {
+            action,
+            path: path.to_path_buf(),
+            source,
+            cause,
+        }
+    }
+
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::InvalidInput { .. } => "invalid_input",
             Self::JobExists { .. } => "job_exists",
             Self::JobNotFound { .. } => "job_not_found",
-            Self::JobNotRunning { .. } => "job_not_running",
-            Self::DeliveryUncertain => "delivery_uncertain",
+            Self::NoPiAncestor => "no_pi_ancestor",
             Self::LockBusy => "lock_busy",
             Self::ZellijNotFound { .. } => "zellij_not_found",
-            Self::ZellijFailed { .. } | Self::PendingStartAbsent { .. } | Self::ZellijTimeout => {
-                "zellij_failed"
-            }
-            Self::StateIo { .. } | Self::StateSerialize { .. } => "state_io",
-            Self::StateCorrupt { .. } => "state_corrupt",
+            Self::ZellijFailed { .. } | Self::ZellijTimeout => "zellij_failed",
+            Self::StateIo { .. } => "state_io",
         }
     }
 
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::JobExists { .. }
-            | Self::JobNotFound { .. }
-            | Self::JobNotRunning { .. }
-            | Self::DeliveryUncertain
-            | Self::LockBusy => 1,
+            Self::JobExists { .. } | Self::JobNotFound { .. } | Self::LockBusy => 1,
             Self::InvalidInput { .. }
-            | Self::PendingStartAbsent { .. }
+            | Self::NoPiAncestor
             | Self::ZellijNotFound { .. }
             | Self::ZellijFailed { .. }
             | Self::ZellijTimeout
-            | Self::StateIo { .. }
-            | Self::StateCorrupt { .. }
-            | Self::StateSerialize { .. } => 2,
+            | Self::StateIo { .. } => 2,
         }
     }
 
-    /// Projects an identity-free message for public (model-visible) output.
-    /// State paths contain the scope digest (`scopes/<digest>/...` and
-    /// `/tmp/agent-terminal-<digest>`), so they must never be published; the
-    /// underlying details remain available through tracing.
     #[must_use]
     pub fn public_message(&self) -> String {
         match self {
-            Self::StateIo { action, .. } => format!("state operation {action} failed"),
-            Self::StateCorrupt { .. } => "state file is corrupt".to_owned(),
-            Self::StateSerialize { .. } => "state serialization failed".to_owned(),
+            Self::StateIo { action, cause, .. } => {
+                format!("state operation {action} failed: {cause}")
+            }
             Self::ZellijFailed { message } | Self::InvalidInput { message } => message.clone(),
             _ => self.to_string(),
         }

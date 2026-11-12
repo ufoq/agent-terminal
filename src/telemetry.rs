@@ -1,26 +1,18 @@
-use std::io;
-
-use tracing_subscriber::EnvFilter;
-
 use crate::error::Error;
 
 pub fn init(verbose: u8) -> Result<(), Error> {
-    let default_level = match verbose {
+    let default = match verbose {
         0 => "warn",
         1 => "info",
-        2 => "debug",
-        _ => "trace",
+        _ => "debug",
     };
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(false)
-        .without_time()
-        .compact()
-        .with_writer(io::stderr)
+        .with_writer(std::io::stderr)
         .try_init()
         .map_err(|source| Error::InvalidInput {
-            message: format!("could not initialize tracing: {source}"),
+            message: format!("could not initialize logging: {source}"),
         })
 }

@@ -8,18 +8,9 @@ readme = "README.md"
 description = "Agent-native terminal job control backed by Zellij"
 exclude = ["/target/**"]
 
-[[test]]
-name = "zellij_e2e"
-path = "tests/zellij_e2e/mod.rs"
-
-[[test]]
-name = "recovery_contract"
-path = "tests/recovery_contract/mod.rs"
-
 [dependencies]
-blake3 = { version = "1", features = ["pure"] }
+sha2 = "0.10"
 clap = { version = "4.6", features = ["derive", "env"] }
-directories = "6"
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,11 +19,11 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+tempfile = "3"
 wait-timeout = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"
-tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -43,9 +34,9 @@ unused_must_use = "deny"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"

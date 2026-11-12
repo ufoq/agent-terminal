@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
-mod commands;
+pub mod commands;
 pub mod config;
-pub mod controller;
 pub mod domain;
 pub mod error;
+pub mod keeper;
 pub mod output;
+pub mod owner;
 pub mod paths;
-mod reconcile;
-pub mod state;
+pub mod sweep;
 pub mod telemetry;
 pub mod zellij;
