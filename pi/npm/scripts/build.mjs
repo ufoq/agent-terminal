@@ -44,7 +44,9 @@ async function main() {
   const releaseVersion = JSON.parse(readFileSync(join(repoRoot, "release.json"), "utf8")).version
   const builtVersion = run(targetBin, ["--version"], { stdio: "pipe" }).stdout.toString().trim()
   if (builtVersion !== `agent-terminal ${releaseVersion}`) {
-    throw new Error(`built binary reports ${JSON.stringify(builtVersion)}, expected agent-terminal ${releaseVersion}`)
+    throw new Error(
+      `built binary reports ${JSON.stringify(builtVersion)}, expected agent-terminal ${releaseVersion}`,
+    )
   }
   const distDir = compileTypeScript(sharedSrc, join(npmRoot, "dist"), [
     "@earendil-works/pi-coding-agent",
