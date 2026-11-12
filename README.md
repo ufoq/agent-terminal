@@ -29,7 +29,11 @@ pi install npm:@ufoq/pi-agent-terminal-bundle-zellij
 ```
 
 The extension puts the packaged binary on `PATH` and registers the `agent-terminal`
-skill.
+skill. That `PATH` change is process-local: it applies inside `pi` and its children,
+not to a plain shell or `docker exec`. Outside `pi`, invoke the packaged absolute
+`bin/linux-x64/agent-terminal` and add `--global` when there is no `pi` ancestor.
+The `-bundle-zellij` package also ships `bin/zellij/zellij`; the slim package
+requires Zellij on `PATH`. Do not install either binary system-wide.
 
 ## CLI
 
@@ -59,8 +63,19 @@ Responses are one JSON object:
 {"status":"error","code":"job_not_found","message":"job \"dev\" was not found"}
 ```
 
-Errors use a stable `code`: `job_exists`, `job_not_found`, `lock_busy`,
-`no_pi_ancestor`, `zellij_*`, or `state_io`. The `message` never includes a state path.
+Errors use a stable `code`: `job_exists`, `job_not_found`, `session_lost`,
+`lock_busy`, `no_pi_ancestor`, `zellij_*`, or `state_io`. The `message` never
+includes a state path.
+
+`list` normally returns only `jobs`. If the project has state but its Zellij
+session is absent, an empty list also carries `"session":"lost"`, and `read`,
+`send`, and `press` return `session_lost` instead of `job_not_found`. `list`
+does not sweep in that case, so an immediately following `read` also reports
+the absence; the next non-`list` command sweeps the state. This is an
+invocation-local observation, not a job registry: it cannot prove the named job
+existed, and a normal idle cleanup or failed start can produce it. `start`
+rebuilds the session; `stop` remains safe. Repeated `list` calls keep the
+diagnostic visible until a non-`list` command or `start` clears it.
 
 ## Lifetime and scope
 
@@ -98,7 +113,11 @@ the private runtime directory, never under the user's real config.
 
 - `read` before resending.
 - `stop` a job when done; the last stop removes the session.
-- An exited job disappears from `list`; `read` returns `job_not_found`.
+- An exited job normally disappears from `list`; `read` returns `job_not_found`.
+  If its session is also absent, `list` shows `"session":"lost"` and `read`
+  reports `session_lost`; the next non-`list` command sweeps, so start again.
+- After a `zellij_failed` timeout, run `list` or `read` before retrying `start`;
+  the operation may already have succeeded.
 - `lock_busy` means another command is running; retry once.
 - Run from `pi`, or use `--global`, when no `pi` ancestor exists.
 

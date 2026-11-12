@@ -56,7 +56,7 @@ pub(super) fn invoke(
             if source.kind() == io::ErrorKind::NotFound {
                 Error::ZellijNotFound { source }
             } else {
-                tracing::warn!(error = %source, "could not start zellij");
+                tracing::warn!(kind = ?source.kind(), "could not start zellij");
                 Error::ZellijFailed {
                     message: "could not start the terminal backend".to_owned(),
                 }
@@ -72,7 +72,7 @@ pub(super) fn invoke(
         Err(source) => {
             let _kill = child.kill();
             let _reap = child.wait();
-            tracing::warn!(error = %source, "waiting for zellij failed");
+            tracing::warn!(kind = ?source.kind(), "waiting for zellij failed");
             return Err(Error::ZellijFailed {
                 message: "waiting for the terminal backend failed".to_owned(),
             });
@@ -91,4 +91,45 @@ fn read_capture(file: &mut File, scratch: &Path) -> Result<String, Error> {
         .and_then(|_| file.take(CAPTURE_LIMIT).read_to_end(&mut bytes))
         .map_err(|source| Error::state_io("read zellij capture file", scratch, source))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods)]
+
+    use std::{ffi::OsString, fs, os::unix::fs::PermissionsExt as _, time::Duration};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn timeout_is_reported_once_without_replay() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("calls.log");
+        let executable = dir.path().join("fake-zellij");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexec sleep 5\n",
+            marker.display()
+        );
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let Err(error) = invoke(
+            &executable,
+            dir.path(),
+            dir.path(),
+            dir.path(),
+            dir.path(),
+            dir.path(),
+            &[OsString::from("action")],
+            Duration::from_millis(100),
+        ) else {
+            panic!("timeout was not reported");
+        };
+        assert!(matches!(error, Error::ZellijTimeout), "{error:?}");
+        assert!(error.to_string().contains("outcome is unknown"), "{error}");
+        let calls = fs::read_to_string(&marker).unwrap();
+        assert_eq!(calls.lines().count(), 1, "backend was replayed: {calls}");
+    }
 }

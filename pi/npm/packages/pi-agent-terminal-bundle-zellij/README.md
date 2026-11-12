@@ -27,6 +27,12 @@ The extension itself is responsible for PATH setup and compatibility flags:
   CLI is available to every child process.
 - It also prepends the bundled Zellij binary directory to `PATH`, so the pinned
   Zellij 0.44.3 takes precedence over any system Zellij.
+
+This PATH change is process-local: it applies inside `pi` and its children, not
+to a plain shell or `docker exec`. Outside `pi`, invoke the packaged absolute
+`bin/linux-x64/agent-terminal` and add `--global` when there is no `pi`
+ancestor. If Zellij is not on `PATH` outside `pi`, point
+`AGENT_TERMINAL_ZELLIJ` at this package's `bin/zellij/zellij`.
 - It registers `--cwd` and `--no-lsp` as accepted compatibility flags for the
   shared agent-terminal harness; pi has no native equivalents, so they are
   accepted without claiming behavior.

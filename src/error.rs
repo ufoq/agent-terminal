@@ -11,6 +11,10 @@ pub enum Error {
     JobExists { job: String },
     #[error("job {job:?} was not found")]
     JobNotFound { job: String },
+    #[error(
+        "terminal session is absent; no jobs are visible in this project and scope; start again if needed"
+    )]
+    SessionLost,
     #[error("no pi process was found in the ancestor chain; start a job from pi, or use --global")]
     NoPiAncestor,
     #[error("another controller operation is in progress")]
@@ -22,7 +26,7 @@ pub enum Error {
     },
     #[error("zellij operation failed: {message}")]
     ZellijFailed { message: String },
-    #[error("zellij operation timed out after the command was dispatched")]
+    #[error("terminal backend client timed out; the operation outcome is unknown")]
     ZellijTimeout,
     #[error("state {action} failed: {cause}")]
     StateIo {
@@ -60,6 +64,7 @@ impl Error {
             Self::InvalidInput { .. } => "invalid_input",
             Self::JobExists { .. } => "job_exists",
             Self::JobNotFound { .. } => "job_not_found",
+            Self::SessionLost => "session_lost",
             Self::NoPiAncestor => "no_pi_ancestor",
             Self::LockBusy => "lock_busy",
             Self::ZellijNotFound { .. } => "zellij_not_found",
@@ -77,6 +82,7 @@ impl Error {
             | Self::ZellijNotFound { .. }
             | Self::ZellijFailed { .. }
             | Self::ZellijTimeout
+            | Self::SessionLost
             | Self::StateIo { .. } => 2,
         }
     }

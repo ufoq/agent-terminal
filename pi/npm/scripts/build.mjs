@@ -12,6 +12,7 @@
 // in the shared build library at scripts/npm-build-lib.mjs; the Zellij version
 // and SHA-256 pins exist only there.
 
+import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
@@ -27,6 +28,7 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const npmRoot = dirname(__dirname)
+const repoRoot = dirname(dirname(npmRoot))
 const packagesDir = join(npmRoot, "packages")
 const sharedSrc = join(npmRoot, "src", "index.ts")
 
@@ -34,10 +36,16 @@ const slimPackage = join(packagesDir, "pi-agent-terminal")
 const bundlePackage = join(packagesDir, "pi-agent-terminal-bundle-zellij")
 
 async function main() {
+  run("node", [join(repoRoot, "scripts", "release-version.mjs"), "check"])
   cleanPackage(slimPackage)
   cleanPackage(bundlePackage)
 
   const targetBin = buildAgentTerminalBinary()
+  const releaseVersion = JSON.parse(readFileSync(join(repoRoot, "release.json"), "utf8")).version
+  const builtVersion = run(targetBin, ["--version"], { stdio: "pipe" }).stdout.toString().trim()
+  if (builtVersion !== `agent-terminal ${releaseVersion}`) {
+    throw new Error(`built binary reports ${JSON.stringify(builtVersion)}, expected agent-terminal ${releaseVersion}`)
+  }
   const distDir = compileTypeScript(sharedSrc, join(npmRoot, "dist"), [
     "@earendil-works/pi-coding-agent",
   ])

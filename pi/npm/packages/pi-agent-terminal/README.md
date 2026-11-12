@@ -27,6 +27,12 @@ The extension itself is responsible for PATH setup and compatibility flags:
   shared agent-terminal harness; pi has no native equivalents, so they are
   accepted without claiming behavior.
 
+This PATH change is process-local: it applies inside `pi` and its children, not
+to a plain shell or `docker exec`. Outside `pi`, invoke the packaged absolute
+`bin/linux-x64/agent-terminal` and add `--global` when there is no `pi`
+ancestor. This slim package does not ship Zellij, so Zellij must be installed
+and on `PATH`.
+
 Jobs are scoped to the nearest `pi` process in the CLI's ancestor chain. The
 full chain is recorded so a parent `pi` exit also cleans jobs started by
 subagents. No environment variable is required; use `--global` for a

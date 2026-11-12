@@ -55,6 +55,23 @@ Jobs are created with `--close-on-exit`, so an exited process leaves no pane, no
 record, and no stale state. A completed job simply disappears. The skill tells the agent
 to read output before the process exits and to stop jobs it no longer needs.
 
+If a project has state but its named session is absent, diagnostic commands
+report it: `list` returns an empty `jobs` array plus `"session":"lost"` when no
+job panes are visible, and `read`/`send`/`press` return `session_lost` instead
+of `job_not_found`. `list` is the one diagnostic that does not sweep the
+project, so an immediately following `read` still sees the absence and reports
+it too. The next non-`list` command sweeps the state, so the observation is not
+durable. It is not proof that a named job existed: failed-start residue, keeper
+idle cleanup, or a wrong project with stale state can produce it. `start` and
+`stop` skip the observation and keep their recovery paths. A session that
+disappears after the observation is not relabelled. There is still no registry
+or tombstone.
+
+Backend failure logging is content-free: it records exit status, argument count,
+parse line/column, and captured output lengths, never command arguments, raw
+stderr, or a parser error string. `paste` text and `new-pane` commands therefore
+cannot leak through diagnostics.
+
 ## Sessions and keeper
 
 Each project in an owner scope has one Zellij session:
@@ -112,7 +129,9 @@ sweep removes it. A crash after pane creation leaves a normal job pane.
 
 ## Sweep
 
-Sweep runs before every command, under the project lock. Projects in other scopes or
+Sweep runs before every command under the project lock, except a `list` that
+reports session loss: that `list` preserves the state for one following
+diagnostic, and the next non-`list` command sweeps. Projects in other scopes or
 with other digests are inspected only after taking their own non-blocking project lock;
 busy targets are skipped.
 

@@ -110,8 +110,9 @@ impl ZellijCli {
         } else {
             tracing::warn!(
                 status = %output.status,
-                stderr = %output.stderr.trim(),
-                arguments = ?arguments,
+                argument_count = arguments.len(),
+                stdout_captured_text_bytes = output.stdout.len(),
+                stderr_captured_text_bytes = output.stderr.len(),
                 "zellij command failed"
             );
             Err(Error::ZellijFailed {
@@ -157,7 +158,12 @@ impl ZellijCli {
         } else if output.stderr.contains("No active zellij sessions") {
             Ok(false)
         } else {
-            tracing::warn!(stderr = %output.stderr.trim(), "zellij list-sessions failed");
+            tracing::warn!(
+                status = %output.status,
+                stdout_captured_text_bytes = output.stdout.len(),
+                stderr_captured_text_bytes = output.stderr.len(),
+                "zellij list-sessions failed"
+            );
             Err(Error::ZellijFailed {
                 message: "terminal backend operation failed".to_owned(),
             })
@@ -178,7 +184,13 @@ impl ZellijCli {
             timeout,
         )?;
         serde_json::from_str(&output.stdout).map_err(|source| {
-            tracing::warn!(error = %source, "invalid list-panes JSON");
+            tracing::warn!(
+                line = source.line(),
+                column = source.column(),
+                stdout_captured_text_bytes = output.stdout.len(),
+                stderr_captured_text_bytes = output.stderr.len(),
+                "invalid list-panes JSON"
+            );
             Error::ZellijFailed {
                 message: "terminal backend returned invalid pane data".to_owned(),
             }

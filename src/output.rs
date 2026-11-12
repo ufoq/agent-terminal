@@ -73,6 +73,8 @@ pub struct JobSummary {
 #[derive(Debug, Serialize)]
 pub struct ListData {
     pub jobs: Vec<JobSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<&'static str>,
 }
 
 #[derive(Debug, ThisError)]

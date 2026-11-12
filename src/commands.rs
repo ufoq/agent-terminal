@@ -113,13 +113,14 @@ fn find_zellij() -> Result<PathBuf, Error> {
     })
 }
 
-pub fn list(context: &Context) -> Result<CommandData, Error> {
-    let jobs = current_panes(context)?
+pub fn list(context: &Context, session_lost: bool) -> Result<CommandData, Error> {
+    let jobs: Vec<JobSummary> = current_panes(context)?
         .iter()
         .filter_map(PaneSnapshot::job_name)
         .map(|name| JobSummary { name })
         .collect();
-    Ok(CommandData::List(ListData { jobs }))
+    let session = (session_lost && jobs.is_empty()).then_some("lost");
+    Ok(CommandData::List(ListData { jobs, session }))
 }
 
 fn current_panes(context: &Context) -> Result<Vec<PaneSnapshot>, Error> {
@@ -171,11 +172,9 @@ pub fn start(
     Ok(CommandData::Start(StartData { job }))
 }
 
-pub fn read(context: &Context, job: &JobName) -> Result<CommandData, Error> {
+pub fn read(context: &Context, job: &JobName, session_lost: bool) -> Result<CommandData, Error> {
     let panes = current_panes(context)?;
-    let pane = find_job(&panes, job).ok_or_else(|| Error::JobNotFound {
-        job: job.as_str().to_owned(),
-    })?;
+    let pane = find_job(&panes, job).ok_or_else(|| missing_job(job, session_lost))?;
     let scratch = context.paths.scratch_dir();
     ensure_private_dir(&scratch)?;
     let path = scratch.join(format!("screen.{}", std::process::id()));
@@ -194,8 +193,13 @@ pub fn read(context: &Context, job: &JobName) -> Result<CommandData, Error> {
     }))
 }
 
-pub fn send(context: &Context, job: &JobName, text: &str) -> Result<CommandData, Error> {
-    let pane = require_job(context, job)?;
+pub fn send(
+    context: &Context,
+    job: &JobName,
+    text: &str,
+    session_lost: bool,
+) -> Result<CommandData, Error> {
+    let pane = require_job(context, job, session_lost)?;
     context
         .zellij
         .paste(pane.id, text, context.zellij.command_timeout())?;
@@ -207,8 +211,13 @@ pub fn send(context: &Context, job: &JobName, text: &str) -> Result<CommandData,
     Ok(CommandData::Send(SendData { job: job.clone() }))
 }
 
-pub fn press(context: &Context, job: &JobName, key: &Key) -> Result<CommandData, Error> {
-    let pane = require_job(context, job)?;
+pub fn press(
+    context: &Context,
+    job: &JobName,
+    key: &Key,
+    session_lost: bool,
+) -> Result<CommandData, Error> {
+    let pane = require_job(context, job, session_lost)?;
     context.zellij.send_keys(
         pane.id,
         &[key.zellij_token().to_owned()],
@@ -256,13 +265,34 @@ fn finish_idle(context: &Context) -> Result<(), Error> {
     crate::sweep::remove_project(&context.paths)
 }
 
-fn require_job(context: &Context, job: &JobName) -> Result<PaneSnapshot, Error> {
+fn require_job(
+    context: &Context,
+    job: &JobName,
+    session_lost: bool,
+) -> Result<PaneSnapshot, Error> {
     let panes = current_panes(context)?;
     find_job(&panes, job)
         .cloned()
-        .ok_or_else(|| Error::JobNotFound {
+        .ok_or_else(|| missing_job(job, session_lost))
+}
+
+fn missing_job(job: &JobName, session_lost: bool) -> Error {
+    if session_lost {
+        Error::SessionLost
+    } else {
+        Error::JobNotFound {
             job: job.as_str().to_owned(),
-        })
+        }
+    }
+}
+
+fn session_is_absent(context: &Context) -> Result<bool, Error> {
+    if !context.paths.project_dir().is_dir() {
+        return Ok(false);
+    }
+    Ok(!context
+        .zellij
+        .session_exists(context.zellij.command_timeout())?)
 }
 
 fn ensure_session(context: &Context) -> Result<(), Error> {
@@ -355,18 +385,28 @@ pub fn run_command(
     command: crate::cli::CliCommand,
 ) -> Result<CommandData, Error> {
     let _lock = acquire_lock(&context.paths)?;
-    sweep::sweep(&context.paths, &context.zellij)?;
+    let observe_absence = matches!(
+        &command,
+        crate::cli::CliCommand::List
+            | crate::cli::CliCommand::Read { .. }
+            | crate::cli::CliCommand::Send { .. }
+            | crate::cli::CliCommand::Press { .. }
+    );
+    let session_lost = observe_absence && session_is_absent(context)?;
+    if !(session_lost && matches!(command, crate::cli::CliCommand::List)) {
+        sweep::sweep(&context.paths, &context.zellij)?;
+    }
     match command {
-        crate::cli::CliCommand::List => list(context),
+        crate::cli::CliCommand::List => list(context, session_lost),
         crate::cli::CliCommand::Start { job, cwd, command } => start(
             context,
             job,
             cwd.as_deref().unwrap_or_else(|| Path::new(".")),
             &command,
         ),
-        crate::cli::CliCommand::Read { job } => read(context, &job),
-        crate::cli::CliCommand::Send { job, text } => send(context, &job, &text),
-        crate::cli::CliCommand::Press { job, key } => press(context, &job, &key),
+        crate::cli::CliCommand::Read { job } => read(context, &job, session_lost),
+        crate::cli::CliCommand::Send { job, text } => send(context, &job, &text, session_lost),
+        crate::cli::CliCommand::Press { job, key } => press(context, &job, &key, session_lost),
         crate::cli::CliCommand::Stop { job } => stop(context, &job),
     }
 }

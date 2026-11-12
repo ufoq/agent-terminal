@@ -87,7 +87,13 @@ fn list_panes(zellij: &Path) -> Result<Vec<PaneSnapshot>, Error> {
         });
     }
     serde_json::from_slice(&output.stdout).map_err(|source| {
-        tracing::warn!(error = %source, "keeper saw invalid pane JSON");
+        tracing::warn!(
+            line = source.line(),
+            column = source.column(),
+            stdout_captured_raw_bytes = output.stdout.len(),
+            stderr_captured_raw_bytes = output.stderr.len(),
+            "keeper saw invalid pane JSON"
+        );
         Error::ZellijFailed {
             message: "keeper saw invalid pane data".to_owned(),
         }
