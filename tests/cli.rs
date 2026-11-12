@@ -962,14 +962,14 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         .map(|path| (path, fs::read(root.join(path)).unwrap()))
     };
 
-    let first = run_release(&["sync", "0.1.6"]);
+    let first = run_release(&["sync", "0.2.0"]);
     assert!(
         first.status.success(),
         "same-version sync: {}",
         String::from_utf8_lossy(&first.stderr)
     );
     let before_second = snapshot();
-    let second = run_release(&["sync", "0.1.6"]);
+    let second = run_release(&["sync", "0.2.0"]);
     assert!(
         second.status.success(),
         "same-version sync: {}",
@@ -981,7 +981,7 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         "same-version sync was not idempotent"
     );
 
-    let output = run_release(&["sync", "0.1.7"]);
+    let output = run_release(&["sync", "0.2.1"]);
     assert!(
         output.status.success(),
         "drift sync: {}",
@@ -990,10 +990,10 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
     assert!(
         fs::read_to_string(root.join("release.json"))
             .unwrap()
-            .contains("\"0.1.7\"")
+            .contains("\"0.2.1\"")
     );
     let cargo_after = fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    assert!(cargo_after.contains("version = \"0.1.7\""));
+    assert!(cargo_after.contains("version = \"0.2.1\""));
     assert!(cargo_after.contains("sha2 = \"0.10\""));
     assert!(
         run_release(&["check"]).status.success(),
@@ -1022,24 +1022,24 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
     fs::write(
         &cargo_path,
         canonical.replace(
-            "version = \"0.1.6\"",
-            "version = \"0.1.6\"\nversion = '0.9.9'",
+            "version = \"0.2.0\"",
+            "version = \"0.2.0\"\nversion = '0.9.9'",
         ),
     )
     .unwrap();
     let before = snapshot();
-    let output = run_release(&["sync", "0.1.7"]);
+    let output = run_release(&["sync", "0.2.1"]);
     assert!(!output.status.success(), "duplicate version was accepted");
     assert_eq!(snapshot(), before, "duplicate version caused writes");
 
     fs::write(
         &cargo_path,
-        canonical.replace("version = \"0.1.6\"\n", "")
+        canonical.replace("version = \"0.2.0\"\n", "")
             + "\n [dependencies.serde]\nversion = \"1\"\n",
     )
     .unwrap();
     let before = snapshot();
-    let output = run_release(&["sync", "0.1.7"]);
+    let output = run_release(&["sync", "0.2.1"]);
     assert!(!output.status.success(), "dependency version was accepted");
     assert_eq!(snapshot(), before, "dependency version caused writes");
 
@@ -1049,7 +1049,7 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
     )
     .unwrap();
     let before = snapshot();
-    let output = run_release(&["sync", "0.1.7"]);
+    let output = run_release(&["sync", "0.2.1"]);
     assert!(!output.status.success(), "wrong package name was accepted");
     assert_eq!(snapshot(), before, "wrong package name caused writes");
 
@@ -1057,16 +1057,16 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         format!("{canonical}\n [package]\nname = \"other\"\nversion = \"9.9.9\"\n"),
         canonical.replace("[package]", "[package] # comment"),
         canonical.replace(
-            "version = \"0.1.6\"",
-            "version = \"0.1.6\"\n\"version\" = \"9.9.9\"",
+            "version = \"0.2.0\"",
+            "version = \"0.2.0\"\n\"version\" = \"9.9.9\"",
         ),
         format!("{canonical}\n[\"package\"]\nversion = \"9.9.9\"\n"),
         format!("{canonical}\n['package']\nversion = \"9.9.9\"\n"),
         format!(
-            "{canonical}\ndescription = \"\"\"\n[package]\nname = \"agent-terminal\"\nversion = \"0.1.6\"\n\"\"\"\n"
+            "{canonical}\ndescription = \"\"\"\n[package]\nname = \"agent-terminal\"\nversion = \"0.2.0\"\n\"\"\"\n"
         ),
         format!(
-            "{canonical}\ndescription = \"\"\"\nname = \"agent-terminal\"\nversion = \"0.1.6\"\n[dependencies]\n\"\"\"\n"
+            "{canonical}\ndescription = \"\"\"\nname = \"agent-terminal\"\nversion = \"0.2.0\"\n[dependencies]\n\"\"\"\n"
         ),
         format!("{canonical}\n[\"pack\\u0061ge\"]\nversion = \"9.9.9\"\n"),
         format!("{canonical}\n\n[[package]]\nname = \"other\"\nversion = \"9.9.9\"\n"),
@@ -1079,14 +1079,14 @@ fn release_script_is_idempotent_and_rejects_ambiguous_cargo() {
         format!("{canonical}\npackage = {{ version = \"9.9.9\" }}\n"),
         format!("{canonical}\npackage.version = \"9.9.9\"\n"),
         canonical.replace(
-            "version = \"0.1.6\"",
-            "version = \"0.1.6\"\n\"vers\\u0069on\" = \"9.9.9\"",
+            "version = \"0.2.0\"",
+            "version = \"0.2.0\"\n\"vers\\u0069on\" = \"9.9.9\"",
         ),
     ];
     for cargo in malformed {
         fs::write(&cargo_path, cargo).unwrap();
         let before = snapshot();
-        let output = run_release(&["sync", "0.1.7"]);
+        let output = run_release(&["sync", "0.2.1"]);
         assert!(
             !output.status.success(),
             "ambiguous package structure was accepted"
